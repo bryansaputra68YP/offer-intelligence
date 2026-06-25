@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import datetime as dt
+import gzip
+import json
+import mimetypes
+import os
+import subprocess
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import Request, urlopen
+
+
+ROOT = Path(__file__).resolve().parents[1]
+STATIC_DIR = ROOT / "outputs" / "offer_chatbot"
+DATA_FILE = STATIC_DIR / "chatbot_data.js"
+LEVANTA_BASE = "https://app.levanta.io/api/creator/v1"
+DEFAULT_MONTHS = [
+    ("March", 2, 2026),
+    ("April", 3, 2026),
+    ("May", 4, 2026),
+    ("June", 5, 2026),
+]
+MONTH_NAMES = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+]
+
+
+def number(value):
+    try:
+        if value is None or value == "":
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def money(value):
+    return round(number(value), 2)
+
+
+def normalize(value):
+    return "".join(ch for ch in str(value or "").lower().replace("&", "and") if ch.isalnum())
+
+
+def load_static_data():
+    if not DATA_FILE.exists():
+        return {}, {}, {}
+    text = DATA_FILE.read_text(encoding="utf-8")
+    prefix = "window.CHATBOT_DATA="
+    if not text.startswith(prefix):
+        return {}, {}, {}
+    payload = json.loads(text[len(prefix) :].rstrip(";\n"))
+    by_id = {}
+    by_brand = {}
+    for offer in payload.get("offers", []):
+        merchant_id = str(offer.get("merchantId") or "").strip()
+        brand = normalize(offer.get("brand"))
+        if merchant_id and merchant_id not in by_id:
+            by_id[merchant_id] = offer
+        if brand and brand not in by_brand:
+            by_brand[brand] = offer
+    return payload, by_id, by_brand
+
+
+STATIC_DATA, OFFERS_BY_ID, OFFERS_BY_BRAND = load_static_data()
+
+
+def availability_date(year, zero_based_month, payment_cycle=None):
+    # Levanta invoice API uses zero-based report months. If the sheet gives us a
+    # merchant-specific payment cycle, use report-month day 2 + that cycle.
+    if payment_cycle:
+        try:
+            return (dt.date(year, zero_based_month + 1, 2) + dt.timedelta(days=int(float(payment_cycle)))).isoformat()
+        except (TypeError, ValueError):
+            pass
+
+    # Default rule: checkable on day 3 two calendar months after report month.
+    month_index = zero_based_month + 2
+    y = year + month_index // 12
+    m = month_index % 12 + 1
+    return dt.date(y, m, 3).isoformat()
+
+
+def payment_status(raw_status, expected, paid, available_date):
+    raw = str(raw_status or "").lower()
+    due = dt.date.today() >= dt.date.fromisoformat(available_date)
+    remaining = max(0.0, expected - paid)
+    if raw == "paid" or (expected > 0 and paid >= expected - 0.01 and "late" not in raw and "unpaid" not in raw):
+        return "Paid"
+    if expected <= 0 and paid <= 0:
+        if "pending" in raw:
+            return "Pending"
+        return "Unknown"
+    if paid > 0 and remaining > 0.01:
+        return "Partial"
+    if not due or "pending" in raw:
+        return "Pending"
+    if "late" in raw or "unpaid" in raw or due:
+        return "Unpaid"
+    return "Unknown"
+
+
+def levanta_get(path, params, api_key):
+    url = f"{LEVANTA_BASE}{path}?{urlencode(params)}"
+    curl_config = "\n".join(
+        [
+            f'url = "{url}"',
+            f'header = "Authorization: Bearer {api_key}"',
+            'header = "Accept: application/json"',
+            'user-agent = "YeahPromos-Offer-Intelligence/1.0"',
+            "silent",
+            "show-error",
+            "fail",
+            "connect-timeout = 20",
+            "max-time = 60",
+            "retry = 2",
+            "retry-delay = 1",
+        ]
+    )
+    last_error = ""
+    for attempt in range(3):
+        result = subprocess.run(
+            ["curl", "--config", "-"],
+            input=curl_config,
+            text=True,
+            capture_output=True,
+            timeout=75,
+            check=False,
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+        last_error = (result.stderr or result.stdout or f"curl exited {result.returncode}").strip()
+        if attempt < 2:
+            time.sleep(1 + attempt)
+    raise URLError(last_error[:500])
+
+
+def fetch_invoice_items(month, year, api_key):
+    cursor = None
+    items = []
+    while True:
+        params = {
+            "limit": 100,
+            "marketplace": "all",
+            "month": month,
+            "year": year,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        data = levanta_get("/invoices/items", params, api_key)
+        items.extend(data.get("items", []))
+        cursor = data.get("cursor")
+        if not cursor:
+            break
+    return items
+
+
+def months_from_query(query):
+    start = query.get("start", ["2026-03"])[0]
+    end = query.get("end", ["2026-06"])[0]
+    try:
+        start_year, start_month = [int(part) for part in start.split("-", 1)]
+        end_year, end_month = [int(part) for part in end.split("-", 1)]
+    except ValueError:
+        return DEFAULT_MONTHS
+
+    months = []
+    year, month = start_year, start_month
+    while (year, month) <= (end_year, end_month):
+        months.append((MONTH_NAMES[month - 1], month - 1, year))
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return months[:18]
+
+
+def normalize_invoice_item(item, month_name, zero_based_month, year):
+    brand = item.get("brand") or {}
+    merchant_id = str(brand.get("id") or "").strip()
+    merchant_name = str(brand.get("name") or "").strip()
+    offer = OFFERS_BY_ID.get(merchant_id) or OFFERS_BY_BRAND.get(normalize(merchant_name)) or {}
+    expected = money(number(item.get("commission")) + number(item.get("cpcCommission")))
+    raw = str(item.get("status") or "unknown")
+    paid = expected if raw.lower() == "paid" else money(item.get("paidAmount"))
+    remaining = max(0.0, money(expected - paid))
+    payment_cycle = offer.get("paymentCycle") or ""
+    available = availability_date(year, zero_based_month, payment_cycle)
+    month_key = f"{year}-{zero_based_month + 1:02d}"
+    status = payment_status(raw, expected, paid, available)
+    note_by_status = {
+        "Paid": "Payment confirmed by Levanta API.",
+        "Pending": f"Payment is not due yet under the {'merchant payment cycle' if payment_cycle else '60-day availability rule'}.",
+        "Unpaid": "Payment is due and needs follow-up.",
+        "Partial": "Partial payment found; remaining amount needs follow-up.",
+    }
+    return {
+        "id": f"{merchant_id or normalize(merchant_name)}::{month_key}::{normalize(merchant_name)}",
+        "merchantId": merchant_id,
+        "merchantName": merchant_name,
+        "network": "Levanta",
+        "tier": offer.get("tier") or "Unknown",
+        "category": offer.get("category") or offer.get("levantaCategory") or "Uncategorized",
+        "reportMonth": month_name,
+        "reportYear": year,
+        "reportMonthKey": month_key,
+        "revenueMade": money(item.get("sales")),
+        "commissionMade": expected,
+        "expectedPaymentAmount": expected,
+        "paidAmount": paid,
+        "remainingAmount": remaining,
+        "paymentCycle": payment_cycle,
+        "paymentAvailabilityDate": available,
+        "paymentStatus": status,
+        "rawStatus": raw,
+        "lastCheckedDate": dt.date.today().isoformat(),
+        "currency": item.get("currency") or "USD",
+        "notes": note_by_status.get(status, "Payment status returned by Levanta API needs review."),
+    }
+
+
+def payment_summary(records):
+    merchant_ids = {record.get("merchantId") or record.get("merchantName") for record in records}
+    unpaid = {record.get("merchantId") or record.get("merchantName") for record in records if record.get("paymentStatus") == "Unpaid"}
+    pending = {record.get("merchantId") or record.get("merchantName") for record in records if record.get("paymentStatus") == "Pending"}
+    paid = {record.get("merchantId") or record.get("merchantName") for record in records if record.get("paymentStatus") == "Paid"}
+    return {
+        "recordCount": len(records),
+        "merchantCount": len([mid for mid in merchant_ids if mid]),
+        "totalRevenueMade": money(sum(number(record.get("revenueMade")) for record in records)),
+        "totalCommissionMade": money(sum(number(record.get("commissionMade")) for record in records)),
+        "totalPaidAmount": money(sum(number(record.get("paidAmount")) for record in records)),
+        "totalRemainingAmount": money(sum(number(record.get("remainingAmount")) for record in records)),
+        "totalUnpaidAmount": money(sum(number(record.get("remainingAmount")) for record in records if record.get("paymentStatus") == "Unpaid")),
+        "totalPendingAmount": money(sum(number(record.get("remainingAmount")) for record in records if record.get("paymentStatus") == "Pending")),
+        "unpaidMerchantCount": len([mid for mid in unpaid if mid]),
+        "pendingMerchantCount": len([mid for mid in pending if mid]),
+        "paidMerchantCount": len([mid for mid in paid if mid]),
+    }
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "OfferChatbot/1.0"
+
+    def end_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+    def send_json(self, status, payload):
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/levanta/payments":
+            self.handle_payments_api(parsed)
+            return
+        self.handle_static(parsed.path)
+
+    def handle_payments_api(self, parsed):
+        api_key = os.environ.get("LEVANTA_API_KEY", "").strip()
+        if not api_key:
+            self.send_json(503, {"ok": False, "source": "fallback", "error": "LEVANTA_API_KEY is not configured"})
+            return
+        query = parse_qs(parsed.query)
+        records = []
+        try:
+            for month_name, zero_based_month, year in months_from_query(query):
+                for item in fetch_invoice_items(zero_based_month, year, api_key):
+                    records.append(normalize_invoice_item(item, month_name, zero_based_month, year))
+        except HTTPError as error:
+            body = error.read().decode("utf-8", "replace")[:500]
+            self.send_json(error.code, {"ok": False, "source": "levanta-api", "error": body})
+            return
+        except (URLError, TimeoutError, json.JSONDecodeError, OSError) as error:
+            self.send_json(502, {"ok": False, "source": "levanta-api", "error": str(error)})
+            return
+
+        self.send_json(
+            200,
+            {
+                "ok": True,
+                "source": "levanta-api",
+                "checkedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "records": records,
+                "summary": payment_summary(records),
+            },
+        )
+
+    def handle_static(self, path):
+        if path in ("", "/"):
+            path = "/index.html"
+        target = (STATIC_DIR / path.lstrip("/")).resolve()
+        if not str(target).startswith(str(STATIC_DIR.resolve())) or not target.is_file():
+            self.send_error(404)
+            return
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        body = target.read_bytes()
+        accepts_gzip = "gzip" in self.headers.get("Accept-Encoding", "")
+        should_compress = accepts_gzip and (
+            content_type.startswith("text/")
+            or content_type in {
+                "application/javascript",
+                "application/json",
+                "application/x-javascript",
+            }
+            or target.suffix in {".js", ".css", ".html", ".json"}
+        )
+        if should_compress:
+            body = gzip.compress(body, compresslevel=6)
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        if should_compress:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        return
+
+
+def main():
+    port = int(os.environ.get("PORT", "8765"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    print(f"Offer chatbot server listening on http://127.0.0.1:{port}", flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

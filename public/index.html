@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Offer Intelligence Chat</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css?v=20260625-blue1" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-mark">
+          <div class="mark-grid" aria-hidden="true"></div>
+          <div>
+            <h1>Offer Intelligence</h1>
+            <p>Amazon tier analysis</p>
+          </div>
+        </div>
+
+        <nav class="page-nav" aria-label="Pages">
+          <button class="page-nav-button active" id="dashboardNav" data-icon="grid" type="button">Dashboard</button>
+          <button class="page-nav-button" id="paymentsNav" data-icon="card" type="button">Payments</button>
+          <div class="nav-group">
+            <button class="page-nav-button report-nav" id="sheetsNav" data-icon="chart" type="button">
+              <span>Reports</span>
+              <small>Targets</small>
+            </button>
+            <div class="nav-subnav" aria-label="Tier reports">
+              <button class="page-nav-button tier-nav-button" data-tier-page="Tier 1" type="button">Tier 1</button>
+              <button class="page-nav-button tier-nav-button" data-tier-page="Tier 2" type="button">Tier 2</button>
+              <button class="page-nav-button tier-nav-button" data-tier-page="Tier 3" type="button">Tier 3</button>
+              <button class="page-nav-button tier-nav-button" data-tier-page="Tier 4" type="button">Tier 4</button>
+              <button class="page-nav-button tier-nav-button" data-tier-page="BLACK TIER" type="button">Black Tier</button>
+            </div>
+          </div>
+        </nav>
+
+        <section class="panel source-panel" aria-label="Source status">
+          <div class="panel-title">
+            <span>Status</span>
+          </div>
+          <div class="source-row">
+            <span>YeahPromos</span>
+            <strong>Backend EPC</strong>
+          </div>
+          <div class="source-row">
+            <span>Levanta</span>
+            <strong>Mar-Jun payments</strong>
+          </div>
+          <div class="source-row">
+            <span>Sheets</span>
+            <strong>Tier logic loaded</strong>
+          </div>
+        </section>
+
+      </aside>
+
+      <main class="workspace">
+        <section class="topbar dashboard-page">
+          <div>
+            <h2>Recommendation Chatbot</h2>
+            <p id="datasetStamp"></p>
+          </div>
+          <div class="quick-actions" id="quickActions"></div>
+        </section>
+
+        <section class="metrics dashboard-page" id="metrics"></section>
+
+        <section class="panel filters dashboard-filters dashboard-page" aria-label="Dashboard filters">
+          <div class="panel-title">
+            <span>Dashboard Filters</span>
+          </div>
+          <label>
+            Tier
+            <select id="tierFilter">
+              <option value="all">All tiers</option>
+            </select>
+          </label>
+          <label>
+            Network
+            <select id="networkFilter">
+              <option value="all">All networks</option>
+            </select>
+          </label>
+          <label>
+            Category
+            <select id="categoryFilter">
+              <option value="all">All categories</option>
+            </select>
+          </label>
+          <label>
+            Min EPC
+            <input id="minEpc" type="number" step="0.01" min="0" placeholder="0.00" />
+          </label>
+          <label>
+            Min AOV
+            <input id="minAov" type="number" step="1" min="0" placeholder="0" />
+          </label>
+          <label>
+            Min conversion
+            <input id="minCvr" type="number" step="0.1" min="0" placeholder="%" />
+          </label>
+          <label class="checkbox-row">
+            <input id="notPaidOnly" type="checkbox" />
+            <span>Unpaid only</span>
+          </label>
+          <button class="secondary-button" id="resetFilters" type="button">
+            Reset
+          </button>
+        </section>
+
+        <section class="main-grid dashboard-page">
+          <section class="chat-panel" aria-label="Chat">
+            <div class="chat-log" id="chatLog"></div>
+            <form class="chat-input" id="chatForm">
+              <input id="chatInput" autocomplete="off" placeholder="Ask about EPC, tiers, AOV, conversion, unpaid offers..." />
+              <button type="submit" aria-label="Send">
+                Send
+              </button>
+            </form>
+          </section>
+
+          <section class="insight-panel" aria-label="Insights">
+            <div class="chart-header">
+              <div>
+                <h3 id="contextTitle">Context Overview</h3>
+                <p id="contextSubtitle">Ask a question to update this panel</p>
+              </div>
+              <button class="icon-button" id="downloadCsv" type="button" aria-label="Download filtered CSV">
+                CSV
+              </button>
+            </div>
+            <canvas id="offerChart" width="520" height="260"></canvas>
+            <div class="recommendation-box context-panel" id="recommendationBox"></div>
+          </section>
+        </section>
+
+        <section class="table-panel dashboard-page" aria-label="Offer table">
+          <div class="table-toolbar">
+            <div>
+              <h3>Offers</h3>
+              <p id="tableCount"></p>
+            </div>
+            <div class="sort-group">
+              <button class="sort-button active" data-sort="epc" type="button">EPC</button>
+              <button class="sort-button" data-sort="conversionRate" type="button">CVR</button>
+              <button class="sort-button" data-sort="aov" type="button">AOV</button>
+              <button class="sort-button" data-sort="salesAmount" type="button">Sales</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Brand</th>
+                  <th>Tier</th>
+                  <th>Network</th>
+                  <th>Category</th>
+                  <th>EPC</th>
+                  <th>AOV</th>
+                  <th>CVR</th>
+                  <th>Orders</th>
+                  <th>Payment</th>
+                </tr>
+              </thead>
+              <tbody id="offerRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="payments-page hidden" id="paymentsPage" aria-label="Payments">
+          <div class="payments-header">
+            <div>
+              <h2>Payments</h2>
+              <p id="paymentStamp">Monthly payment tracking by merchant and report month</p>
+            </div>
+            <button class="secondary-button" id="paymentSync" type="button">Sync Levanta</button>
+          </div>
+
+          <section class="payment-summary" id="paymentSummary"></section>
+
+          <section class="panel payment-filters" aria-label="Payment filters">
+            <label>
+              Month
+              <select id="paymentMonthFilter">
+                <option value="all">All months</option>
+              </select>
+            </label>
+            <label>
+              Network
+              <select id="paymentNetworkFilter">
+                <option value="all">All networks</option>
+              </select>
+            </label>
+            <label>
+              Tier
+              <select id="paymentTierFilter">
+                <option value="all">All tiers</option>
+              </select>
+            </label>
+            <label>
+              Status
+              <select id="paymentStatusFilter">
+                <option value="all">All statuses</option>
+              </select>
+            </label>
+            <label>
+              Merchant search
+              <input id="paymentSearch" type="search" placeholder="Merchant name or ID" />
+            </label>
+            <label class="checkbox-row">
+              <input id="paymentUnpaidOnly" type="checkbox" />
+              <span>Unpaid only</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="paymentPendingOnly" type="checkbox" />
+              <span>Pending only</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="paymentOverdueOnly" type="checkbox" />
+              <span>Due / overdue only</span>
+            </label>
+          </section>
+
+          <section class="payment-layout">
+            <section class="table-panel payment-table-panel" aria-label="Payment table">
+              <div class="table-toolbar">
+                <div>
+                  <h3>Payment Records</h3>
+                  <p id="paymentTableCount"></p>
+                </div>
+              </div>
+              <div class="table-wrap payment-table-wrap">
+                <table class="payment-table">
+                  <thead>
+                    <tr>
+                      <th>Merchant ID</th>
+                      <th>Merchant</th>
+                      <th>Network</th>
+                      <th>Tier</th>
+                      <th>Month</th>
+                      <th>Status</th>
+                      <th>Revenue Made</th>
+                      <th>Commission Made</th>
+                      <th>Expected</th>
+                      <th>Paid</th>
+                      <th>Remaining</th>
+                      <th>Cycle</th>
+                      <th>Available</th>
+                      <th>Last Checked</th>
+                      <th>Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody id="paymentRows"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+        </section>
+
+        <section class="sheet-page hidden" id="sheetPage" aria-label="All sheet tabs">
+          <div class="tier-header sheet-page-header">
+            <div>
+              <h2 id="sheetPageTitle">Monthly Targets</h2>
+              <p id="sheetPageSubtitle">Target and performance summary from the report sheet</p>
+            </div>
+          </div>
+          <section class="tier-summary" id="sheetPageSummary"></section>
+          <section class="panel sheet-target-filters" aria-label="Target filters">
+            <label>
+              Month
+              <select id="targetMonthSelect"></select>
+            </label>
+            <label>
+              Tier
+              <select id="targetTierFilter">
+                <option value="all">All tiers</option>
+              </select>
+            </label>
+          </section>
+          <section class="panel sheet-target-notes" id="sheetPageNotes"></section>
+          <section class="table-panel tier-table-panel" aria-label="Selected sheet table">
+            <div class="table-toolbar">
+              <div>
+                <h3 id="sheetTableTitle">Monthly Target Records</h3>
+                <p id="sheetTableCount"></p>
+              </div>
+            </div>
+            <div class="table-wrap sheet-table-wrap">
+              <table class="sheet-table">
+                <thead id="sheetGridHead"></thead>
+                <tbody id="sheetGridRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section class="tier-page hidden" id="tierPage" aria-label="Tier sheet">
+          <div class="tier-header">
+            <div>
+              <h2 id="tierPageTitle">Tier</h2>
+              <p id="tierPageSubtitle">Google Sheet report view</p>
+            </div>
+          </div>
+          <section class="tier-summary" id="tierPageSummary"></section>
+          <section class="panel sheet-notes" id="tierPageNotes"></section>
+          <section class="panel tier-sheet-filters" aria-label="Tier filters">
+            <label>
+              Search
+              <input id="tierSheetSearch" type="search" placeholder="Merchant, ID, reason, recommendation" />
+            </label>
+            <label>
+              Network / Agency
+              <select id="tierSheetNetwork">
+                <option value="all">All networks</option>
+              </select>
+            </label>
+            <label>
+              Country
+              <select id="tierSheetCountry">
+                <option value="all">All countries</option>
+              </select>
+            </label>
+            <label>
+              Min EPC
+              <input id="tierSheetMinEpc" type="number" step="0.01" min="0" placeholder="0.00" />
+            </label>
+            <label>
+              Min revenue
+              <input id="tierSheetMinRevenue" type="number" step="1" min="0" placeholder="0" />
+            </label>
+          </section>
+          <section class="table-panel tier-table-panel" aria-label="Tier table">
+            <div class="table-toolbar">
+              <div>
+                <h3 id="tierTableTitle">Sheet Records</h3>
+                <p id="tierTableCount"></p>
+              </div>
+            </div>
+            <div class="table-wrap sheet-table-wrap">
+              <table class="sheet-table">
+                <thead id="tierSheetHead"></thead>
+                <tbody id="tierSheetRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="./sheet_report_data.js?v=20260624-sheet2"></script>
+    <script src="./chatbot_data.js?v=20260624-payments3"></script>
+    <script src="./app.js?v=20260625-blue1"></script>
+  </body>
+</html>
