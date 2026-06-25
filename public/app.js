@@ -3,7 +3,9 @@
   const sheetReport = window.SHEET_REPORT_DATA || { sheets: [], tierSheets: [] };
   const offers = data.offers || [];
   const PAYMENT_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-  const PAYMENT_TODAY = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00`);
+  const ACTIVE_PAYMENT_MONTHS = ["March", "April", "May", "June"];
+  const MAX_RECOMMENDATION_EXPORT = 1000;
+  const PAYMENT_TODAY = new Date(`${localDateKey(new Date())}T00:00:00`);
   let paymentRecords = (data.paymentRecords || []).map(normalizePaymentRecord);
   const paymentRecordsByMerchant = new Map();
   rebuildPaymentIndex();
@@ -47,7 +49,9 @@
     },
     paymentSource: "saved invoice file",
     livePaymentsLoaded: false,
-    livePaymentsLoading: false
+    livePaymentsLoading: false,
+    recommendationDownloads: {},
+    downloadSequence: 0
   };
 
   const els = {
@@ -217,9 +221,13 @@
     return Number.isNaN(date.getTime()) ? null : date;
   }
 
-  function isoDate(date) {
+  function localDateKey(date) {
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
-    return date.toISOString().slice(0, 10);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  }
+
+  function isoDate(date) {
+    return localDateKey(date);
   }
 
   function monthNameFromText(value) {
@@ -775,11 +783,18 @@
       ));
   }
 
-  function topRecommendations(pool, context = {}) {
+  function rankedRecommendations(pool, context = {}) {
     return pool
       .filter((offer) => context.includeBlack || offer.tier !== "BLACK TIER")
       .filter((offer) => context.includeTier4 || offer.tier !== "Tier 4")
-      .sort((a, b) => recommendationScore(b, context) - recommendationScore(a, context))
+      .map((offer) => ({ offer, score: recommendationScore(offer, context) }))
+      .filter((item) => item.score > -9999)
+      .sort((a, b) => b.score - a.score)
+      .map((item) => item.offer);
+  }
+
+  function topRecommendations(pool, context = {}) {
+    return rankedRecommendations(pool, context)
       .slice(0, 5);
   }
 
@@ -1215,12 +1230,45 @@
     return `I found multiple close merchant matches. Which one do you mean?<br>${resultTable(rows, compactColumns.slice(0, 5))}`;
   }
 
+  function requestedRecommendationCount(prompt, fallback = 5) {
+    const text = String(prompt || "");
+    const patterns = [
+      /\b(?:top|give|show|list|export|download)\s+(\d{1,4})\b/i,
+      /\b(\d{1,4})\s+(?:offers?|brands?|recommendations?)\b/i
+    ];
+    for (const pattern of patterns) {
+      const match = pattern.exec(text);
+      if (!match) continue;
+      const before = text.slice(Math.max(0, match.index - 8), match.index);
+      if (/tier\s*$/i.test(before)) continue;
+      const requested = Number(match[1]);
+      if (Number.isFinite(requested) && requested > 0) {
+        return Math.min(Math.max(Math.floor(requested), 1), MAX_RECOMMENDATION_EXPORT);
+      }
+    }
+    return fallback;
+  }
+
   function recommendationHtml(rows, context = {}) {
-    const top = topRecommendations(rows, context);
-    setContext(buildRecommendationContext(top, context));
+    const requestedCount = number(context.requestedCount) || 5;
+    const ranked = rankedRecommendations(rows, context);
+    const exportRows = ranked.slice(0, requestedCount);
+    const top = exportRows.slice(0, 5);
+    setContext(buildRecommendationContext(top, { ...context, requestedCount, exportCount: exportRows.length }));
     if (!top.length) return "I found no offers that fit this recommendation request with the current filters.";
     const label = context.category ? ` for ${escapeHtml(context.category)}` : context.tier ? ` from ${escapeHtml(context.tier)}` : "";
-    return `Based on current tier, backend performance, payment status, and traffic fit, I recommend these 5 offers${label}:<br>` +
+    const downloadId = registerRecommendationDownload(exportRows, context, requestedCount);
+    const exportNote = exportRows.length < requestedCount
+      ? `I found ${exportRows.length.toLocaleString()} offers that fit.`
+      : `The Excel download includes all ${exportRows.length.toLocaleString()} requested offers.`;
+    return `<p><strong>Recommendation preview${label}:</strong> showing the top ${top.length.toLocaleString()} here so the chat stays readable. ${escapeHtml(exportNote)}</p>` +
+      `<div class="download-card">
+        <div>
+          <strong>Full recommendation file</strong>
+          <span>${exportRows.length.toLocaleString()} offers ranked by tier, EPC, CVR, revenue, ATC, DPV, and payment risk.</span>
+        </div>
+        <button class="download-xlsx-button" type="button" data-download-id="${escapeHtml(downloadId)}">Download Excel</button>
+      </div>` +
       top.map((offer, index) => `<div class="recommendation-answer">
         <strong>${index + 1}. ${escapeHtml(offer.brand || "")}</strong> - ${escapeHtml(tierGroup(offer))}
         <ul>
@@ -1322,7 +1370,7 @@
     if (wantsRecommendation) {
       let pool = category ? sortedForCategory(category, { includeTier4: wantsTier4, includeBlack: wantsBlack, prompt, tier }) : offers;
       if (tier) pool = pool.filter((offer) => offer.tier === tier);
-      return recommendationHtml(pool, { category, tier, google: wantsGoogle, includeTier4: wantsTier4, includeBlack: wantsBlack });
+      return recommendationHtml(pool, { category, tier, google: wantsGoogle, includeTier4: wantsTier4, includeBlack: wantsBlack, requestedCount: requestedRecommendationCount(prompt), prompt });
     }
 
     if (tier) {
@@ -1453,6 +1501,235 @@
     URL.revokeObjectURL(url);
   }
 
+  function safeFilePart(value) {
+    const text = String(value || "recommendations").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    return text || "recommendations";
+  }
+
+  function registerRecommendationDownload(rows, context = {}, requestedCount = rows.length) {
+    const id = `recommendation-${++state.downloadSequence}`;
+    const today = isoDate(PAYMENT_TODAY) || new Date().toISOString().slice(0, 10);
+    const scope = context.category || context.tier || "top";
+    state.recommendationDownloads[id] = {
+      rows,
+      context,
+      requestedCount,
+      filename: `offer_recommendations_${safeFilePart(scope)}_${rows.length}_offers_${today}.xlsx`
+    };
+    return id;
+  }
+
+  function recommendationExportColumns() {
+    return [
+      ["Rank", (offer, index) => index + 1],
+      ["Brand", (offer) => offer.brand || ""],
+      ["Merchant ID", (offer) => offer.merchantId || ""],
+      ["Tier", (offer) => tierGroup(offer)],
+      ["Network", (offer) => offer.network || ""],
+      ["Category", (offer) => offer.category || "Uncategorized"],
+      ["EPC", (offer) => number(offer.epc)],
+      ["AOV", (offer) => number(offer.aov)],
+      ["Conversion Rate", (offer) => number(offer.conversionRate)],
+      ["Clicks", (offer) => number(offer.clicks)],
+      ["DPV", (offer) => number(offer.dpv)],
+      ["ATC", (offer) => number(offer.atc)],
+      ["Orders", (offer) => number(offer.orders)],
+      ["Revenue", (offer) => number(offer.salesAmount)],
+      ["Commission", (offer) => number(offer.affCommission)],
+      ["Payment Status", (offer) => offer.paymentStatus || ""],
+      ["Payment Cycle", (offer) => offer.paymentCycle || ""],
+      ["Recommended Link", (offer) => offer.recommendedLink || ""],
+      ["Top ASINs", (offer) => Array.isArray(offer.topAsins) ? offer.topAsins.join(", ") : (offer.topAsins || offer.asinsText || "")],
+      ["Recommended Action", (offer) => recommendedAction(offer)],
+      ["Why Recommended", (offer, index, context) => whyRecommended(offer, context)],
+      ["Best Traffic Angle", (offer, index, context) => bestAngle(offer, context)],
+      ["Caution", (offer) => caution(offer)]
+    ];
+  }
+
+  function xmlEscape(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[ch]);
+  }
+
+  function columnName(index) {
+    let name = "";
+    let n = index + 1;
+    while (n > 0) {
+      const remainder = (n - 1) % 26;
+      name = String.fromCharCode(65 + remainder) + name;
+      n = Math.floor((n - 1) / 26);
+    }
+    return name;
+  }
+
+  function worksheetXml(rows, context = {}) {
+    const columns = recommendationExportColumns();
+    const sheetRows = [
+      columns.map(([header]) => header),
+      ...rows.map((offer, index) => columns.map(([, getter]) => getter(offer, index, context)))
+    ];
+    const rowXml = sheetRows.map((row, rowIndex) => {
+      const cells = row.map((value, colIndex) => {
+        const ref = `${columnName(colIndex)}${rowIndex + 1}`;
+        if (typeof value === "number" && Number.isFinite(value)) return `<c r="${ref}"><v>${value}</v></c>`;
+        return `<c r="${ref}" t="inlineStr"><is><t>${xmlEscape(value)}</t></is></c>`;
+      }).join("");
+      return `<row r="${rowIndex + 1}">${cells}</row>`;
+    }).join("");
+    const widths = columns.map(([, , width], index) => `<col min="${index + 1}" max="${index + 1}" width="${width || (index < 6 ? 18 : 14)}" customWidth="1"/>`).join("");
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <cols>${widths}</cols>
+  <sheetData>${rowXml}</sheetData>
+</worksheet>`;
+  }
+
+  function workbookXml() {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Recommendations" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`;
+  }
+
+  function workbookRelsXml() {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+  }
+
+  function rootRelsXml() {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`;
+  }
+
+  function contentTypesXml() {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>`;
+  }
+
+  function stylesXml() {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+  }
+
+  function crc32(bytes) {
+    if (!crc32.table) {
+      crc32.table = Array.from({ length: 256 }, (_, n) => {
+        let c = n;
+        for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+        return c >>> 0;
+      });
+    }
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i += 1) crc = crc32.table[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function uint16(value) {
+    const bytes = new Uint8Array(2);
+    new DataView(bytes.buffer).setUint16(0, value, true);
+    return bytes;
+  }
+
+  function uint32(value) {
+    const bytes = new Uint8Array(4);
+    new DataView(bytes.buffer).setUint32(0, value >>> 0, true);
+    return bytes;
+  }
+
+  function concatBytes(parts) {
+    const total = parts.reduce((sum, part) => sum + part.length, 0);
+    const output = new Uint8Array(total);
+    let offset = 0;
+    parts.forEach((part) => {
+      output.set(part, offset);
+      offset += part.length;
+    });
+    return output;
+  }
+
+  function dosTimestamp() {
+    const date = new Date();
+    const time = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+    const day = ((date.getFullYear() - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+    return { time, day };
+  }
+
+  function createZip(files) {
+    const encoder = new TextEncoder();
+    const { time, day } = dosTimestamp();
+    const locals = [];
+    const centrals = [];
+    let offset = 0;
+    files.forEach((file) => {
+      const nameBytes = encoder.encode(file.name);
+      const dataBytes = typeof file.data === "string" ? encoder.encode(file.data) : file.data;
+      const checksum = crc32(dataBytes);
+      const local = concatBytes([
+        uint32(0x04034b50), uint16(20), uint16(0x0800), uint16(0), uint16(time), uint16(day),
+        uint32(checksum), uint32(dataBytes.length), uint32(dataBytes.length), uint16(nameBytes.length), uint16(0),
+        nameBytes, dataBytes
+      ]);
+      const central = concatBytes([
+        uint32(0x02014b50), uint16(20), uint16(20), uint16(0x0800), uint16(0), uint16(time), uint16(day),
+        uint32(checksum), uint32(dataBytes.length), uint32(dataBytes.length), uint16(nameBytes.length), uint16(0), uint16(0),
+        uint16(0), uint16(0), uint32(0), uint32(offset), nameBytes
+      ]);
+      locals.push(local);
+      centrals.push(central);
+      offset += local.length;
+    });
+    const centralDirectory = concatBytes(centrals);
+    const end = concatBytes([
+      uint32(0x06054b50), uint16(0), uint16(0), uint16(files.length), uint16(files.length),
+      uint32(centralDirectory.length), uint32(offset), uint16(0)
+    ]);
+    return concatBytes([...locals, centralDirectory, end]);
+  }
+
+  function createRecommendationWorkbook(rows, context = {}) {
+    return createZip([
+      { name: "[Content_Types].xml", data: contentTypesXml() },
+      { name: "_rels/.rels", data: rootRelsXml() },
+      { name: "xl/workbook.xml", data: workbookXml() },
+      { name: "xl/_rels/workbook.xml.rels", data: workbookRelsXml() },
+      { name: "xl/styles.xml", data: stylesXml() },
+      { name: "xl/worksheets/sheet1.xml", data: worksheetXml(rows, context) }
+    ]);
+  }
+
+  function downloadRecommendationXlsx(downloadId) {
+    const item = state.recommendationDownloads[downloadId];
+    if (!item || !item.rows || !item.rows.length) return;
+    const workbook = createRecommendationWorkbook(item.rows, item.context);
+    const blob = new Blob([workbook], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = item.filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   function paymentStatusClass(status) {
     const text = String(status || "").toLowerCase();
     if (text === "paid") return "paid";
@@ -1462,8 +1739,14 @@
   }
 
   function uniquePaymentValues(key) {
-    return Array.from(new Set(paymentRecords.map((record) => record[key]).filter(Boolean))).sort((a, b) => {
-      if (key === "reportMonth") return PAYMENT_MONTHS.indexOf(a) - PAYMENT_MONTHS.indexOf(b);
+    const base = paymentRecords.map((record) => record[key]).filter(Boolean);
+    const values = key === "reportMonth" ? [...ACTIVE_PAYMENT_MONTHS, ...base] : base;
+    return Array.from(new Set(values)).sort((a, b) => {
+      if (key === "reportMonth") {
+        const aIndex = PAYMENT_MONTHS.indexOf(a);
+        const bIndex = PAYMENT_MONTHS.indexOf(b);
+        return (aIndex < 0 ? 99 : aIndex) - (bIndex < 0 ? 99 : bIndex);
+      }
       if (String(a).startsWith("Tier") && String(b).startsWith("Tier")) return String(a).localeCompare(String(b), undefined, { numeric: true });
       return String(a).localeCompare(String(b));
     });
@@ -1908,6 +2191,11 @@
       if (!prompt) return;
       els.chatInput.value = "";
       applyPrompt(prompt);
+    });
+    els.chatLog.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-download-id]");
+      if (!button) return;
+      downloadRecommendationXlsx(button.dataset.downloadId);
     });
 
     addMessage("assistant", `Loaded <strong>${offers.length.toLocaleString()}</strong> internal offers. Search merchant name, merchant ID, ASIN, category, payment status, or ask for recommendations.`);
