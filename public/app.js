@@ -2,6 +2,9 @@
   const data = window.CHATBOT_DATA || { summary: {}, offers: [] };
   const sheetReport = window.SHEET_REPORT_DATA || { sheets: [], tierSheets: [] };
   const offers = data.offers || [];
+  offers.forEach((offer) => {
+    offer.paymentCycle = normalizePaymentCycle(offer.paymentCycle, offer.network);
+  });
   const PAYMENT_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   const ACTIVE_PAYMENT_MONTHS = ["March", "April", "May", "June"];
   const MAX_RECOMMENDATION_EXPORT = 1000;
@@ -49,6 +52,14 @@
       month: "",
       tier: "all"
     },
+    targetSort: {
+      key: "",
+      direction: "asc"
+    },
+    tierSheetSort: {
+      key: "",
+      direction: "asc"
+    },
     paymentSource: "saved invoice file",
     livePaymentsLoaded: false,
     livePaymentsLoading: false,
@@ -76,10 +87,12 @@
     chatForm: document.getElementById("chatForm"),
     chatInput: document.getElementById("chatInput"),
     quickActions: document.getElementById("quickActions"),
-    chart: document.getElementById("offerChart"),
     recBox: document.getElementById("recommendationBox"),
     stamp: document.getElementById("datasetStamp"),
     download: document.getElementById("downloadCsv"),
+    paymentDownload: document.getElementById("downloadPaymentsXlsx"),
+    sheetDownload: document.getElementById("downloadSheetXlsx"),
+    tierDownload: document.getElementById("downloadTierXlsx"),
     contextTitle: document.getElementById("contextTitle"),
     contextSubtitle: document.getElementById("contextSubtitle"),
     paymentsPage: document.getElementById("paymentsPage"),
@@ -135,15 +148,18 @@
   ];
 
   const categoryAliases = {
-    beauty: ["beauty", "personal care", "skin", "skincare", "hair"],
-    home: ["home", "kitchen", "furniture", "bedding", "mattress", "office"],
-    pet: ["pet", "dog", "cat"],
-    electronics: ["electronics", "tech", "camera", "audio", "robot"],
-    supplement: ["supplement", "health", "vitamin", "nutrition", "wellness"],
-    baby: ["baby", "kid", "kids", "stroller"],
-    outdoors: ["sports", "outdoor", "outdoors", "patio", "lawn", "garden"],
-    automotive: ["automotive", "car", "vehicle"],
-    tools: ["tools", "home improvement"]
+    beauty: ["beauty", "personal care", "skin", "skin care", "skincare", "facial", "face", "hair", "makeup", "nail", "wrinkle", "anti aging", "anti-aging", "serum", "moisturizer", "sunscreen", "eyelash", "美妆", "美容", "护肤", "个护", "皮肤", "面部", "头发", "彩妆", "指甲", "抗老", "精华", "面霜", "防晒", "睫毛"],
+    home: ["home", "kitchen", "furniture", "bedding", "mattress", "office", "chair", "desk", "cookware", "vacuum", "fireplace", "家居", "家用", "厨房", "家具", "床品", "床垫", "办公", "椅子", "桌子", "厨具", "吸尘器", "扫地机器人", "壁炉"],
+    pet: ["pet", "dog", "cat", "pet supplies", "宠物", "狗", "猫", "宠物用品"],
+    electronics: ["electronics", "tech", "camera", "audio", "robot", "headphone", "earbud", "projector", "smartwatch", "smart watch", "wifi", "usb", "电子", "科技", "数码", "相机", "摄像头", "音频", "耳机", "投影仪", "智能手表", "智能戒指", "路由器", "无线网", "蓝牙"],
+    supplement: ["supplement", "health", "vitamin", "nutrition", "wellness", "probiotic", "magnesium", "creatine", "protein", "保健品", "健康", "维生素", "营养", "益生菌", "镁", "肌酸", "蛋白"],
+    baby: ["baby", "kid", "kids", "stroller", "母婴", "婴儿", "宝宝", "儿童", "童车", "推车"],
+    outdoors: ["sports", "outdoor", "outdoors", "patio", "lawn", "garden", "pool", "camping", "hiking", "fishing", "运动", "户外", "庭院", "草坪", "花园", "泳池", "游泳池", "泳池清洁", "露营", "徒步", "钓鱼"],
+    automotive: ["automotive", "car", "vehicle", "汽车", "车载", "车辆"],
+    tools: ["tools", "home improvement", "工具", "家装", "五金", "维修"],
+    shoes: ["shoes", "sneakers", "loafers", "slippers", "boots", "insoles", "鞋", "鞋子", "运动鞋", "乐福鞋", "拖鞋", "靴", "鞋垫"],
+    fashion: ["clothing", "jewelry", "apparel", "fashion", "shirt", "jeans", "dress", "necklace", "服装", "衣服", "珠宝", "饰品", "牛仔裤", "裙子", "项链"],
+    pool: ["pool cleaner", "pool cleaners", "robotic pool", "robotic pool cleaner", "泳池机器人", "泳池清洁机器人", "泳池清洁器"]
   };
 
   const translations = {
@@ -195,7 +211,8 @@
       "label.Commission": "佣金",
       "label.Action": "动作",
       "label.Cycle": "周期",
-      "label.Available": "可检查日期",
+      "label.Available": "预计收款日期",
+      "label.Expected Payment Date": "预计收款日期",
       "label.Last Checked": "上次检查",
       "label.Notes": "备注",
       "label.Records": "记录",
@@ -237,6 +254,7 @@
       "option.Paid": "已付款",
       "option.Unpaid": "未付款",
       "option.Pending": "待处理",
+      "option.Overdue": "逾期",
       "option.Partial": "部分付款",
       "option.Unknown": "未知",
       "option.March": "三月",
@@ -441,11 +459,32 @@
   }
 
   function normalize(value) {
-    return String(value || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "");
+    return String(value || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9\u4e00-\u9fff]+/g, "");
   }
 
   function words(value) {
-    return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/).filter(Boolean);
+    return String(value || "").toLowerCase().replace(/&/g, "and").match(/[a-z0-9]+|[\u4e00-\u9fff]+/g) || [];
+  }
+
+  function singularToken(token) {
+    const text = String(token || "").toLowerCase();
+    if (text.length > 5 && text.endsWith("ies")) return `${text.slice(0, -3)}y`;
+    if (text.length > 4 && text.endsWith("s")) return text.slice(0, -1);
+    return text;
+  }
+
+  const categoryStopWords = new Set([
+    "a", "an", "and", "are", "based", "best", "brand", "brands", "category", "for", "from",
+    "give", "has", "have", "in", "list", "match", "me", "of", "offer", "offers", "or",
+    "please", "pull", "recommend", "recommendation", "recommendations", "show", "that",
+    "the", "tier", "to", "top", "want", "with", "推荐", "品牌", "商家", "品类", "类别", "类目",
+    "给我", "显示", "列出", "拉取", "下载", "导出", "最好", "最佳", "前", "个", "款", "条"
+  ]);
+
+  function meaningfulTokens(value) {
+    return words(value)
+      .map(singularToken)
+      .filter((token) => token.length > 1 && !categoryStopWords.has(token));
   }
 
   function escapeHtml(value) {
@@ -459,8 +498,44 @@
   function textIncludesAlias(haystack, alias) {
     const term = String(alias || "").toLowerCase().trim();
     if (!term) return false;
+    if (/[^\x00-\x7f]/.test(term)) return haystack.includes(term);
     if (term.length <= 3) return new RegExp(`\\b${escapeRegExp(term)}\\b`).test(haystack);
     return haystack.includes(term);
+  }
+
+  function categoryParts(item) {
+    return [
+      item && item.mainCategory,
+      item && item.subCategory,
+      item && item.mainCategoryCn,
+      item && item.subCategoryCn,
+      item && item.categoryPath,
+      item && item.category,
+      item && item.levantaCategory
+    ].filter((value) => String(value || "").trim() && String(value).trim() !== "Uncategorized");
+  }
+
+  function displayCategory(item) {
+    if (!item) return "Uncategorized";
+    if (item.categoryPath) return item.categoryPath;
+    const main = String(item.mainCategory || "").trim();
+    const sub = String(item.subCategory || "").trim();
+    if (main && sub && main !== sub) return `${main} > ${sub}`;
+    if (sub) return sub;
+    if (main) return main;
+    return item.category || item.levantaCategory || "Uncategorized";
+  }
+
+  function categorySearchText(item) {
+    return categoryParts(item).concat(item && item.brand, item && item.merchantName).filter(Boolean).join(" ").toLowerCase();
+  }
+
+  function uniqueCategoryValues() {
+    const values = new Set();
+    offers.forEach((offer) => {
+      categoryParts(offer).forEach((value) => values.add(String(value).trim()));
+    });
+    return Array.from(values).sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
   }
 
   function dateOnly(value) {
@@ -482,6 +557,11 @@
     const text = String(value || "").toLowerCase();
     const direct = PAYMENT_MONTHS.find((month) => textIncludesAlias(text, month.toLowerCase()));
     if (direct) return direct;
+    const zhMonths = ["一月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "十一月", "十二月"];
+    const zhDirect = zhMonths.findIndex((month) => text.includes(month));
+    if (zhDirect >= 0) return PAYMENT_MONTHS[zhDirect];
+    const numericMonth = text.match(/(?:^|[^0-9])([1-9]|1[0-2])\s*(?:月|月份)/);
+    if (numericMonth) return PAYMENT_MONTHS[Number(numericMonth[1]) - 1];
     const key = text.match(/\b2026-(0[1-9]|1[0-2])\b/);
     if (key) return PAYMENT_MONTHS[Number(key[1]) - 1];
     return null;
@@ -514,49 +594,87 @@
     return date.toISOString().slice(0, 10);
   }
 
+  function normalizePaymentCycle(value, network) {
+    if (String(network || "").trim().toLowerCase() === "wayward") return 105;
+    const cycle = number(value);
+    return cycle > 0 ? Math.round(cycle) : 60;
+  }
+
+  function paymentDueDate(record, cycleOverride) {
+    const cycle = cycleOverride === undefined
+      ? Math.max(60, normalizePaymentCycle(record.paymentCycle, record.network))
+      : Number(cycleOverride);
+    const computed = calculatePaymentAvailabilityDate({ ...record, paymentCycle: cycle });
+    return dateOnly(computed || record.expectedPaymentDate || record.paymentAvailabilityDate);
+  }
+
   function calculatePaymentStatus(record) {
     const raw = String(record.rawStatus || record.paymentStatus || "").toLowerCase();
     const expected = number(record.expectedPaymentAmount ?? record.commissionMade);
     const paid = number(record.paidAmount);
     const remaining = Math.max(0, number(record.remainingAmount ?? (expected - paid)));
-    const availableDate = dateOnly(record.paymentAvailabilityDate || calculatePaymentAvailabilityDate(record));
-    const due = availableDate ? PAYMENT_TODAY >= availableDate : false;
+    const baselineDate = paymentDueDate(record, 60);
+    const cycleDate = paymentDueDate(record);
+    const pastBaseline = baselineDate ? PAYMENT_TODAY > baselineDate : false;
+    const pastCycle = cycleDate ? PAYMENT_TODAY > cycleDate : false;
 
     if (raw === "paid" || (expected > 0 && paid >= expected - 0.01 && !raw.includes("late") && !raw.includes("unpaid"))) return "Paid";
     if (expected <= 0 && paid <= 0) {
       if (raw.includes("pending")) return "Pending";
       return "Unknown";
     }
+    if (!pastBaseline) return "Pending";
+    if (pastCycle && remaining > 0.01) return "Overdue";
     if (paid > 0 && remaining > 0.01) return "Partial";
-    if (!due || raw.includes("pending")) return "Pending";
-    if (raw.includes("late") || raw.includes("unpaid") || due) return "Unpaid";
+    if (raw.includes("pending") || raw.includes("late") || raw.includes("unpaid") || remaining > 0.01) return "Unpaid";
     return "Unknown";
   }
 
+  function firstRecordNumber(record, keys) {
+    for (const key of keys) {
+      if (record[key] === undefined || record[key] === null || record[key] === "") continue;
+      return number(record[key]);
+    }
+    return null;
+  }
+
   function normalizePaymentRecord(record) {
-    const expected = number(record.expectedPaymentAmount ?? record.commissionMade);
+    const revenueMade = firstRecordNumber(record, ["revenueMade", "sales", "revenue", "salesAmount", "totalSales"]) ?? 0;
+    const directCommissionMade = firstRecordNumber(record, ["commissionMade", "totalCommission", "commissionOwed", "expectedPaymentAmount"]);
+    const rawCommission = firstRecordNumber(record, ["commission"]);
+    const cpcCommission = firstRecordNumber(record, ["cpcCommission", "cpc_commission"]) ?? 0;
+    const commissionMade = directCommissionMade ?? ((rawCommission ?? 0) + cpcCommission);
+    const expected = number(record.expectedPaymentAmount ?? commissionMade);
     const paid = number(record.paidAmount);
     const remaining = Math.max(0, number(record.remainingAmount ?? (expected - paid)));
+    const matchedOffer = offerForPaymentMerchant(record) || {};
+    const network = record.network || matchedOffer.network || "Levanta";
     const normalized = {
       ...record,
       merchantId: String(record.merchantId || "").trim(),
       merchantName: String(record.merchantName || record.brand || "").trim(),
-      network: record.network || "Levanta",
+      network,
       tier: record.tier || "Unknown",
-      category: record.category || "Uncategorized",
+      category: record.category || matchedOffer.category || matchedOffer.levantaCategory || "Uncategorized",
+      categoryPath: record.categoryPath || matchedOffer.categoryPath || "",
+      mainCategory: record.mainCategory || matchedOffer.mainCategory || "",
+      subCategory: record.subCategory || matchedOffer.subCategory || "",
+      mainCategoryCn: record.mainCategoryCn || matchedOffer.mainCategoryCn || "",
+      subCategoryCn: record.subCategoryCn || matchedOffer.subCategoryCn || "",
       reportMonth: record.reportMonth || monthNameFromText(record.reportMonthKey) || "Unknown",
       reportYear: Number(record.reportYear || 2026),
       reportMonthKey: record.reportMonthKey || monthKey(record),
-      revenueMade: number(record.revenueMade),
-      commissionMade: number(record.commissionMade ?? expected),
+      revenueMade,
+      commissionMade,
       expectedPaymentAmount: expected,
       paidAmount: paid,
       remainingAmount: remaining,
-      paymentCycle: record.paymentCycle || "",
+      paymentCycle: normalizePaymentCycle(record.paymentCycle || matchedOffer.paymentCycle, network),
       lastCheckedDate: record.lastCheckedDate || data.summary.generatedAt || "",
       notes: record.notes || ""
     };
     normalized.paymentAvailabilityDate = calculatePaymentAvailabilityDate(normalized) || record.paymentAvailabilityDate || "";
+    normalized.expectedPaymentDate = normalized.paymentAvailabilityDate;
     normalized.paymentStatus = calculatePaymentStatus(normalized);
     return normalized;
   }
@@ -585,13 +703,19 @@
     const offer = offerForPaymentMerchant(source) || {};
     const merchantId = String(source.merchantId || offer.merchantId || "").trim();
     const merchantName = String(source.merchantName || source.brand || offer.brand || merchantId || "Unknown merchant").trim();
+    const network = source.network || offer.network || "Levanta";
     const record = {
       id: `${merchantId || normalize(merchantName)}::${reportYear}-${String(monthIndex + 1).padStart(2, "0")}::pending-placeholder`,
       merchantId,
       merchantName,
-      network: "Levanta",
+      network,
       tier: source.tier || offer.tier || "Unknown",
       category: source.category || offer.category || offer.levantaCategory || "Uncategorized",
+      categoryPath: source.categoryPath || offer.categoryPath || "",
+      mainCategory: source.mainCategory || offer.mainCategory || "",
+      subCategory: source.subCategory || offer.subCategory || "",
+      mainCategoryCn: source.mainCategoryCn || offer.mainCategoryCn || "",
+      subCategoryCn: source.subCategoryCn || offer.subCategoryCn || "",
       reportMonth: month,
       reportYear,
       reportMonthKey: `${reportYear}-${String(monthIndex + 1).padStart(2, "0")}`,
@@ -600,7 +724,7 @@
       expectedPaymentAmount: 0,
       paidAmount: 0,
       remainingAmount: 0,
-      paymentCycle: source.paymentCycle || offer.paymentCycle || "",
+      paymentCycle: normalizePaymentCycle(source.paymentCycle || offer.paymentCycle, network),
       rawStatus: "pending",
       lastCheckedDate: isoDate(PAYMENT_TODAY),
       currency: source.currency || "USD",
@@ -608,6 +732,7 @@
       notes: "No Levanta invoice row found yet; marked pending until the month becomes payable or Levanta returns a final status."
     };
     record.paymentAvailabilityDate = calculatePaymentAvailabilityDate(record);
+    record.expectedPaymentDate = record.paymentAvailabilityDate;
     record.paymentStatus = "Pending";
     return normalizePaymentRecord(record);
   }
@@ -645,7 +770,18 @@
   }
 
   function getPaymentRecords() {
-    return paymentRecords.map((record) => ({ ...record, paymentStatus: calculatePaymentStatus(record) }));
+    return paymentRecords
+      .map((record) => ({ ...record, paymentStatus: calculatePaymentStatus(record) }))
+      .filter(hasPayablePaymentAmount);
+  }
+
+  function hasPayablePaymentAmount(record) {
+    return (
+      number(record.commissionMade) > 0 ||
+      number(record.expectedPaymentAmount) > 0 ||
+      number(record.paidAmount) > 0 ||
+      number(record.remainingAmount) > 0
+    );
   }
 
   function getPaymentByMerchant(merchant) {
@@ -681,8 +817,8 @@
   }
 
   function isPaymentOverdue(record) {
-    const dueDate = dateOnly(record.paymentAvailabilityDate);
-    return Boolean(dueDate && PAYMENT_TODAY >= dueDate && number(record.remainingAmount) > 0 && record.paymentStatus !== "Pending");
+    const dueDate = paymentDueDate(record);
+    return Boolean(dueDate && PAYMENT_TODAY > dueDate && number(record.remainingAmount) > 0 && record.paymentStatus !== "Paid");
   }
 
   function getOverduePayments() {
@@ -737,7 +873,7 @@
       rebuildPaymentIndex();
       state.paymentSource = "Levanta API";
       state.livePaymentsLoaded = true;
-      if (options.auto) localStorage.setItem(AUTO_PAYMENT_SYNC_KEY, localDateKey(new Date()));
+      if (options.auto) localStorage.setItem(AUTO_PAYMENT_SYNC_KEY, String(Date.now()));
       refreshPaymentFilterOptions();
       syncPaymentControls();
       setPaymentStamp("live", String(payload.checkedAt || "").slice(0, 10) || isoDate(PAYMENT_TODAY));
@@ -762,8 +898,9 @@
   }
 
   function maybeAutoSyncLevantaPayments() {
-    const today = localDateKey(new Date());
-    if (!today || localStorage.getItem(AUTO_PAYMENT_SYNC_KEY) === today || state.livePaymentsLoading) return;
+    const lastSync = Number(localStorage.getItem(AUTO_PAYMENT_SYNC_KEY) || 0);
+    if (state.livePaymentsLoading) return;
+    if (state.livePaymentsLoaded && Number.isFinite(lastSync) && Date.now() - lastSync < AUTO_PAYMENT_SYNC_INTERVAL_MS) return;
     refreshLevantaPayments({ silent: true, auto: true });
   }
 
@@ -854,7 +991,7 @@
   }
 
   function bestAngle(offer, context = {}) {
-    const category = offer.category && offer.category !== "Uncategorized" ? offer.category : "category";
+    const category = displayCategory(offer) !== "Uncategorized" ? displayCategory(offer) : "category";
     const link = offer.recommendedLink ? `${offer.recommendedLink.toLowerCase()} traffic` : "selected publisher traffic";
     if (context.google) {
       if (number(offer.orders) >= 50 && number(offer.conversionRate) >= 0.01) return `${category} keyword, review, comparison, and high-intent search traffic.`;
@@ -953,6 +1090,116 @@
     return Number.isFinite(n) ? n : 0;
   }
 
+  function isRateColumn(header) {
+    const lower = String(header || "").toLowerCase();
+    return /(success rate|conversion rate|completion rate|avg conversion|\bconversion\b|\bcvr\b)/.test(lower) && !/count/.test(lower);
+  }
+
+  function percentageNumberForHeader(header, value) {
+    if (!isRateColumn(header)) return null;
+    const text = String(value ?? "").trim();
+    if (!text) return null;
+    const cleaned = text.replace(/%$/, "").replace(/,/g, "").trim();
+    if (!/^-?\d+(?:\.\d+)?$/.test(cleaned)) return null;
+    const raw = Number(cleaned);
+    if (!Number.isFinite(raw)) return null;
+    if (text.includes("%")) return raw;
+    return Math.abs(raw) <= 1 ? raw * 100 : raw;
+  }
+
+  function formatPercentNumber(value) {
+    return `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`;
+  }
+
+  function formatSheetCell(header, value) {
+    const text = String(value ?? "");
+    if (text.includes("%")) return text;
+    const percentage = percentageNumberForHeader(header, text);
+    return percentage === null ? text : formatPercentNumber(percentage);
+  }
+
+  function sortableReportValue(header, value) {
+    const text = String(value ?? "").trim();
+    if (!text) return { type: "empty", value: "" };
+    const percentage = percentageNumberForHeader(header, text);
+    if (percentage !== null) return { type: "number", value: percentage };
+    const fraction = text.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)$/);
+    if (fraction && Number(fraction[2]) !== 0) return { type: "number", value: Number(fraction[1]) / Number(fraction[2]) };
+    const dateValue = /^\d{4}-\d{2}-\d{2}/.test(text) ? Date.parse(text.slice(0, 10)) : NaN;
+    if (Number.isFinite(dateValue)) return { type: "number", value: dateValue };
+    const cleaned = text.replace(/[$,%]/g, "").replace(/,/g, "").trim();
+    if (/^-?\d+(?:\.\d+)?$/.test(cleaned)) return { type: "number", value: Number(cleaned) };
+    return { type: "text", value: text.toLowerCase() };
+  }
+
+  function compareReportValues(header, left, right) {
+    const a = sortableReportValue(header, left);
+    const b = sortableReportValue(header, right);
+    if (a.type === "empty" || b.type === "empty") {
+      if (a.type === b.type) return 0;
+      return a.type === "empty" ? 1 : -1;
+    }
+    if (a.type === "number" && b.type === "number") return a.value - b.value;
+    return String(a.value).localeCompare(String(b.value), undefined, { numeric: true, sensitivity: "base" });
+  }
+
+  function defaultReportSortDirection(header) {
+    return /(rank|id|merchant|brand|network|agency|tier|phase|country|reason|recommendation|link|asin|target|objective|status)/i.test(String(header || "")) ? "asc" : "desc";
+  }
+
+  function sortReportRows(rows, sortState, getter) {
+    if (!sortState || !sortState.key) return rows.slice();
+    const multiplier = sortState.direction === "desc" ? -1 : 1;
+    return rows
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => {
+        const left = getter(a.row, sortState.key);
+        const right = getter(b.row, sortState.key);
+        const leftEmpty = String(left ?? "").trim() === "";
+        const rightEmpty = String(right ?? "").trim() === "";
+        if (leftEmpty || rightEmpty) {
+          if (leftEmpty === rightEmpty) return a.index - b.index;
+          return leftEmpty ? 1 : -1;
+        }
+        const result = compareReportValues(sortState.key, left, right);
+        return result ? result * multiplier : a.index - b.index;
+      })
+      .map((item) => item.row);
+  }
+
+  function sortableHeaderHtml(header, sortState, scope) {
+    const active = sortState && sortState.key === header;
+    const direction = active ? sortState.direction : "";
+    const indicator = active ? (direction === "asc" ? "▲" : "▼") : "↕";
+    return `<th><button class="table-sort-button${active ? " active" : ""}" type="button" data-report-sort-scope="${escapeHtml(scope)}" data-report-sort-key="${escapeHtml(header)}" aria-label="Sort by ${escapeHtml(labelText(header))}">
+      <span>${escapeHtml(labelText(header))}</span>
+      <span class="sort-indicator" aria-hidden="true">${escapeHtml(indicator)}</span>
+    </button></th>`;
+  }
+
+  function updateReportSort(sortState, key) {
+    if (sortState.key === key) {
+      sortState.direction = sortState.direction === "asc" ? "desc" : "asc";
+      return;
+    }
+    sortState.key = key;
+    sortState.direction = defaultReportSortDirection(key);
+  }
+
+  function handleReportSortClick(event) {
+    const button = event.target.closest("[data-report-sort-key]");
+    if (!button) return;
+    const key = button.dataset.reportSortKey || "";
+    if (!key) return;
+    if (button.dataset.reportSortScope === "target") {
+      updateReportSort(state.targetSort, key);
+      renderSheetPage();
+      return;
+    }
+    updateReportSort(state.tierSheetSort, key);
+    renderTierPage(state.selectedTierPage);
+  }
+
   function rowValue(row, keys) {
     const list = Array.isArray(keys) ? keys : [keys];
     for (const key of list) {
@@ -968,7 +1215,7 @@
     return offers
       .filter((offer) => state.tier === "all" || offer.tier === state.tier)
       .filter((offer) => state.network === "all" || offer.network === state.network)
-      .filter((offer) => state.category === "all" || offer.category === state.category)
+      .filter((offer) => state.category === "all" || categoryMatches(offer, state.category))
       .filter((offer) => number(offer.epc) >= minEpc)
       .filter((offer) => number(offer.aov) >= minAov)
       .filter((offer) => number(offer.conversionRate) >= minCvr)
@@ -985,7 +1232,7 @@
     if (brand.startsWith(q)) return 92;
     if (brand.includes(q)) return 82;
     const queryWords = words(query);
-    const haystack = words(`${offer.brand} ${offer.category} ${offer.network}`);
+    const haystack = words(`${offer.brand} ${categorySearchText(offer)} ${offer.network}`);
     const matched = queryWords.filter((word) => haystack.some((item) => item.includes(word) || word.includes(item))).length;
     const tokenScore = queryWords.length ? (matched / queryWords.length) * 70 : 0;
     const overlap = [...q].filter((char) => brand.includes(char)).length / Math.max(q.length, 1);
@@ -993,7 +1240,10 @@
   }
 
   function findMerchantMatches(query) {
-    const cleaned = query.replace(/\b(search|find|merchant|overview|info|information|about|for)\b/gi, " ").trim();
+    const cleaned = query
+      .replace(/\b(search|find|merchant|overview|info|information|about|for)\b/gi, " ")
+      .replace(/查找|搜索|查看|看看|商家|品牌|概览|信息|资料|关于|帮我|请|找/g, " ")
+      .trim();
     const scored = offers
       .map((offer) => {
         const score = fuzzyScore(cleaned, offer);
@@ -1029,34 +1279,399 @@
     return { asin, rows: offers.filter((offer) => (offer.topAsins || []).includes(asin)) };
   }
 
+  function metricTermPattern() {
+    return [
+      "commission\\s+(?:made|amount|dollars?)",
+      "affiliate\\s+commission",
+      "aff\\s+commission",
+      "commission\\s+(?:rate|percentage|percent)",
+      "conversion(?:\\s+rate)?",
+      "order\\s+count",
+      "commissions?",
+      "revenue",
+      "sales",
+      "clicks?",
+      "orders?",
+      "epc",
+      "aov",
+      "cvr",
+      "dpv",
+      "atc",
+      "产生佣金",
+      "佣金收入",
+      "佣金金额",
+      "佣金额",
+      "联盟佣金",
+      "佣金率",
+      "佣金比例",
+      "佣金百分比",
+      "佣金",
+      "客单价",
+      "平均订单金额",
+      "转化率",
+      "转换率",
+      "订单数量",
+      "订单数",
+      "订单",
+      "销售额",
+      "收入",
+      "营收",
+      "点击量",
+      "点击",
+      "详情页浏览量",
+      "详情页浏览",
+      "浏览量",
+      "加购数",
+      "加购",
+      "加入购物车"
+    ].join("|");
+  }
+
+  function comparisonTermPattern() {
+    return [
+      "greater\\s+than",
+      "more\\s+than",
+      "at\\s+least",
+      "less\\s+than",
+      "at\\s+most",
+      "不低于",
+      "不少于",
+      "大于等于",
+      "不超过",
+      "小于等于",
+      "above",
+      "over",
+      "minimum",
+      "maximum",
+      "below",
+      "under",
+      "min",
+      "max",
+      ">=",
+      "<=",
+      ">",
+      "<",
+      "至少",
+      "最低",
+      "最少",
+      "高于",
+      "超过",
+      "大于",
+      "以上",
+      "最多",
+      "最高",
+      "低于",
+      "少于",
+      "小于",
+      "以下",
+      "以内"
+    ].join("|");
+  }
+
+  function numberTokenPattern() {
+    return "\\d[\\d,]*(?:\\.\\d+)?\\s*(?:[kKmM]|千|万)?";
+  }
+
+  function metricFilterPattern() {
+    return new RegExp(`(${metricTermPattern()})\\s*(?:is|are|with|of|为|是|在|有|:|：)?\\s*(${comparisonTermPattern()})\\s*[$¥￥]?\\s*(${numberTokenPattern()})\\s*%?`, "gi");
+  }
+
+  function metricRangeFilterPattern() {
+    return new RegExp(`(${metricTermPattern()})\\s*(?:is|are|with|of|为|是|在|有|:|：)?\\s*(?:between|from|range|ranging|介于|从|在)?\\s*[$¥￥]?\\s*(${numberTokenPattern()})\\s*%?\\s*(?:and|to|-|–|—|到|至|和|与)\\s*[$¥￥]?\\s*(${numberTokenPattern()})\\s*%?\\s*(?:之间|范围)?`, "gi");
+  }
+
+  function metricTrailingComparisonPattern() {
+    return new RegExp(`(${metricTermPattern()})\\s*(?:is|are|with|of|为|是|在|有|:|：)?\\s*[$¥￥]?\\s*(${numberTokenPattern()})\\s*%?\\s*(${comparisonTermPattern()})`, "gi");
+  }
+
+  function normalizeMetricName(metric) {
+    const text = String(metric || "").toLowerCase().replace(/\s+/g, " ");
+    if (text === "epc") return { field: "epc", label: "EPC", type: "money" };
+    if (text === "aov" || /客单价|平均订单金额/.test(text)) return { field: "aov", label: "AOV", type: "money" };
+    if (text === "cvr" || text.startsWith("conversion") || /转化率|转换率/.test(text)) return { field: "conversionRate", label: "CVR", type: "percent" };
+    if (/dpv|详情页浏览|浏览量/.test(text)) return { field: "dpv", label: "DPV", type: "count" };
+    if (/atc|加购|加入购物车/.test(text)) return { field: "atc", label: "ATC", type: "count" };
+    if (/click|点击/.test(text)) return { field: "clicks", label: "Clicks", type: "count" };
+    if (text.includes("commission") || /佣金/.test(text)) {
+      if (/made|amount|dollar|affiliate|\baff\b|产生|收入|金额|金额|联盟/.test(text)) return { field: "affCommission", label: "Commission made", type: "money" };
+      return { field: "commissionRate", label: "Commission rate", type: "percent" };
+    }
+    if (text === "revenue" || text === "sales" || /销售额|收入|营收/.test(text)) return { field: "salesAmount", label: "Revenue", type: "money" };
+    return { field: "orders", label: "Orders", type: "count" };
+  }
+
+  function parseMetricNumber(value) {
+    const text = String(value || "").trim().replace(/,/g, "");
+    const match = text.match(/^(\d+(?:\.\d+)?)\s*([kKmM]|千|万)?$/);
+    if (!match) return NaN;
+    const base = Number(match[1]);
+    if (!Number.isFinite(base)) return NaN;
+    const suffix = String(match[2] || "").toLowerCase();
+    if (suffix === "k") return base * 1000;
+    if (suffix === "m") return base * 1000000;
+    if (suffix === "千") return base * 1000;
+    if (suffix === "万") return base * 10000;
+    return base;
+  }
+
+  function normalizeMetricThreshold(metric, raw, sourceText = "") {
+    if (!Number.isFinite(raw)) return NaN;
+    const hasPercent = sourceText.includes("%");
+    return metric.type === "percent"
+      ? (hasPercent || raw > 1 ? raw / 100 : raw)
+      : raw;
+  }
+
+  function normalizeComparisonOperator(operator) {
+    const text = String(operator || "").toLowerCase();
+    if (/below|under|less|at most|maximum|max|<=|<|低于|少于|小于|以下|以内|不超过|最多|最高|小于等于/.test(text)) {
+      return text.includes("=") || /at most|maximum|max|不超过|最多|最高|小于等于|以内/.test(text) ? "<=" : "<";
+    }
+    return text.includes("=") || /at least|minimum|min|不低于|不少于|大于等于|至少|最低|最少|以上/.test(text) ? ">=" : ">";
+  }
+
+  function normalizeCycleComparisonOperator(operator) {
+    const text = String(operator || "").toLowerCase();
+    if (/before|below|under|less|shorter|<|within|up to|at most|maximum|max|低于|少于|小于|短于|早于|以内|以下|不超过|最多|小于等于/.test(text)) {
+      return text.includes("=") || /within|up to|at most|maximum|max|以内|不超过|最多|小于等于|以下/.test(text) ? "<=" : "<";
+    }
+    return text.includes("=") || /at least|minimum|min|不低于|不少于|大于等于|至少|以上/.test(text) ? ">=" : ">";
+  }
+
+  function paymentCycleFilterPattern() {
+    return new RegExp(`(?:payment\\s+)?cycle|付款周期|支付周期|结算周期|周期`, "i");
+  }
+
+  function paymentCycleLeadingFilterPattern() {
+    return new RegExp(`((?:(?:payment\\s+)?cycle)|付款周期|支付周期|结算周期|周期)\\s*(?:is|are|with|of|为|是|在|有|:|：)?\\s*(before|below|under|less\\s+than|shorter\\s+than|within|up\\s+to|at\\s+most|maximum|max|<=|<|above|over|greater\\s+than|more\\s+than|at\\s+least|minimum|min|>=|>|低于|少于|小于|短于|早于|以内|以下|不超过|最多|小于等于|高于|超过|大于|至少|以上|不低于|不少于|大于等于)\\s*(${numberTokenPattern()})\\s*(?:days?|d|天|日)?`, "i");
+  }
+
+  function paymentCycleTrailingFilterPattern() {
+    return new RegExp(`((?:(?:payment\\s+)?cycle)|付款周期|支付周期|结算周期|周期)\\s*(?:is|are|with|of|为|是|在|有|:|：)?\\s*(${numberTokenPattern()})\\s*(?:days?|d|天|日)?\\s*(before|below|under|less\\s+than|shorter\\s+than|within|up\\s+to|at\\s+most|maximum|max|<=|<|above|over|greater\\s+than|more\\s+than|at\\s+least|minimum|min|>=|>|低于|少于|小于|短于|早于|以内|以下|不超过|最多|小于等于|高于|超过|大于|至少|以上|不低于|不少于|大于等于)`, "i");
+  }
+
+  function extractPaymentCycleFilter(prompt) {
+    const text = String(prompt || "");
+    if (!paymentCycleFilterPattern().test(text)) return null;
+    const leading = paymentCycleLeadingFilterPattern().exec(text);
+    const trailing = leading ? null : paymentCycleTrailingFilterPattern().exec(text);
+    const match = leading || trailing;
+    if (!match) return null;
+    const threshold = parseMetricNumber(leading ? match[3] : match[2]);
+    if (!Number.isFinite(threshold)) return null;
+    return {
+      operator: normalizeCycleComparisonOperator(leading ? match[2] : match[3]),
+      threshold,
+      raw: match[0].trim()
+    };
+  }
+
+  function paymentCycleFilterMatches(offer, filter) {
+    const cycle = number(offer.paymentCycle);
+    if (cycle <= 0) return false;
+    if (filter.operator === ">") return cycle > filter.threshold;
+    if (filter.operator === ">=") return cycle >= filter.threshold;
+    if (filter.operator === "<") return cycle < filter.threshold;
+    if (filter.operator === "<=") return cycle <= filter.threshold;
+    return true;
+  }
+
+  function paymentCycleFilterText(filter) {
+    if (!filter) return "";
+    return `Payment cycle ${filter.operator} ${Number(filter.threshold).toLocaleString()} days`;
+  }
+
+  function extractMetricFilters(prompt) {
+    const filters = [];
+    const text = String(prompt || "");
+    let match;
+    const rangePattern = metricRangeFilterPattern();
+    while ((match = rangePattern.exec(text))) {
+      const metric = normalizeMetricName(match[1]);
+      const first = normalizeMetricThreshold(metric, parseMetricNumber(match[2]), match[0]);
+      const second = normalizeMetricThreshold(metric, parseMetricNumber(match[3]), match[0]);
+      if (!Number.isFinite(first) || !Number.isFinite(second)) continue;
+      filters.push({
+        ...metric,
+        operator: "between",
+        min: Math.min(first, second),
+        max: Math.max(first, second),
+        raw: match[0].trim()
+      });
+    }
+    const pattern = metricFilterPattern();
+    while ((match = pattern.exec(text))) {
+      const metric = normalizeMetricName(match[1]);
+      const raw = parseMetricNumber(match[3]);
+      if (!Number.isFinite(raw)) continue;
+      const threshold = normalizeMetricThreshold(metric, raw, match[0]);
+      filters.push({
+        ...metric,
+        operator: normalizeComparisonOperator(match[2]),
+        threshold,
+        raw: match[0].trim()
+      });
+    }
+    const trailingPattern = metricTrailingComparisonPattern();
+    while ((match = trailingPattern.exec(text))) {
+      const metric = normalizeMetricName(match[1]);
+      const raw = parseMetricNumber(match[2]);
+      if (!Number.isFinite(raw)) continue;
+      const threshold = normalizeMetricThreshold(metric, raw, match[0]);
+      filters.push({
+        ...metric,
+        operator: normalizeComparisonOperator(match[3]),
+        threshold,
+        raw: match[0].trim()
+      });
+    }
+    const seen = new Set();
+    return filters.filter((filter) => {
+      const key = `${filter.field}:${filter.operator}:${filter.threshold}:${filter.min}:${filter.max}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function metricFilterMatches(offer, filter) {
+    const value = number(offer[filter.field]);
+    if (filter.operator === "between") return value >= filter.min && value <= filter.max;
+    if (filter.operator === ">") return value > filter.threshold;
+    if (filter.operator === ">=") return value >= filter.threshold;
+    if (filter.operator === "<") return value < filter.threshold;
+    if (filter.operator === "<=") return value <= filter.threshold;
+    return true;
+  }
+
+  function applyMetricFilters(rows, filters) {
+    if (!filters || !filters.length) return rows;
+    return rows.filter((offer) => filters.every((filter) => metricFilterMatches(offer, filter)));
+  }
+
+  function metricThresholdText(filter) {
+    if (filter.operator === "between") {
+      return `${filter.label} between ${metricValueText(filter, filter.min)} and ${metricValueText(filter, filter.max)}`;
+    }
+    return `${filter.label} ${filter.operator} ${metricValueText(filter, filter.threshold)}`;
+  }
+
+  function metricValueText(filter, metricValue) {
+    if (filter.type === "percent") return formatPercentNumber(metricValue * 100);
+    if (filter.type === "money") return `$${Number(metricValue).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+    return Number(metricValue).toLocaleString();
+  }
+
+  function metricFilterText(filters) {
+    return filters && filters.length ? filters.map(metricThresholdText).join(", ") : "";
+  }
+
+  function cleanedCategoryPhrase(text) {
+    return String(text || "")
+      .replace(metricRangeFilterPattern(), " ")
+      .replace(metricFilterPattern(), " ")
+      .replace(metricTrailingComparisonPattern(), " ")
+      .replace(/\b(?:top|give|show|list|export|download|pull)\s+(?:me\s+)?(?:the\s+)?(?:top\s+)?\d{1,4}\b/gi, " ")
+      .replace(/\b\d{1,4}\s+(?:offers?|brands?|recommendations?)\b/gi, " ")
+      .replace(/\btier\s*[1-4]\b/gi, " ")
+      .replace(/\bblack\s*tier\b/gi, " ")
+      .replace(/\b(?:offers?|brands?|recommendations?|recommend|please|best|top|show|give|list|pull|download|export|with|that|has|have|above|over|below|under|greater|less|than|minimum|maximum|min|max|at|least|most|tier)\b/gi, " ")
+      .replace(/推荐|请|帮我|给我|显示|列出|拉取|下载|导出|找|筛选|最好|最佳|前\s*\d*|第?\s*[一二三四1-4]\s*(?:层|级|档)|分层|层级|档位|品类|类别|类目|品牌|商家|个|款|条|大于等于|小于等于|不低于|不少于|不超过|大于|高于|超过|以上|至少|最低|小于|低于|少于|以下|以内|最多|最高|介于|之间/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function categoryScore(query, category) {
+    const queryTokens = meaningfulTokens(query);
+    if (!queryTokens.length) return 0;
+    const categoryTokens = meaningfulTokens(category);
+    const queryNorm = normalize(query);
+    const categoryNorm = normalize(category);
+    let score = 0;
+    if (categoryNorm === queryNorm) score += 110;
+    else if (categoryNorm.includes(queryNorm) || queryNorm.includes(categoryNorm)) score += 55;
+    const matched = queryTokens.filter((queryToken) => (
+      categoryTokens.some((categoryToken) => categoryToken === queryToken || categoryToken.includes(queryToken) || queryToken.includes(categoryToken))
+    )).length;
+    score += (matched / queryTokens.length) * 70;
+    score += categoryTokens.length ? (matched / categoryTokens.length) * 20 : 0;
+    return score;
+  }
+
   function categoryForPrompt(text) {
     const lower = text.toLowerCase();
+    const categories = uniqueCategoryValues().filter((cat) => cat !== "Uncategorized");
+    const phrase = cleanedCategoryPhrase(text);
+    const phraseTokens = meaningfulTokens(phrase);
+    for (const [canonical, aliases] of Object.entries(categoryAliases)) {
+      if (aliases.some((alias) => words(alias).length > 1 && textIncludesAlias(lower, alias))) return canonical;
+    }
+    if (phraseTokens.length <= 1) {
+      for (const [canonical, aliases] of Object.entries(categoryAliases)) {
+        if (aliases.some((alias) => textIncludesAlias(lower, alias))) return canonical;
+      }
+    }
+    if (phrase) {
+      const best = categories
+        .map((category) => ({ category, score: categoryScore(phrase, category) }))
+        .sort((a, b) => b.score - a.score)[0];
+      if (best && best.score >= 58) return best.category;
+    }
     for (const [canonical, aliases] of Object.entries(categoryAliases)) {
       if (aliases.some((alias) => textIncludesAlias(lower, alias))) return canonical;
     }
-    return uniqueValues("category").find((cat) => cat !== "Uncategorized" && lower.includes(cat.toLowerCase())) || null;
+    const direct = categories.find((cat) => lower.includes(cat.toLowerCase()));
+    if (direct) return direct;
+    if (!phrase) return null;
+    if (/(?:offers?|recommendations?)\s*$/i.test(String(text || ""))) return phrase;
+    return null;
   }
 
   function categoryMatches(offer, category) {
     if (!category) return true;
     const aliases = categoryAliases[category] || [category];
-    const haystack = `${offer.category || ""} ${offer.brand || ""}`.toLowerCase();
-    return aliases.some((alias) => textIncludesAlias(haystack, alias));
+    const haystack = categorySearchText(offer);
+    if (aliases.some((alias) => textIncludesAlias(haystack, alias))) return true;
+    const queryTokens = meaningfulTokens(category);
+    if (!queryTokens.length) return true;
+    const haystackTokens = meaningfulTokens(haystack);
+    const matched = queryTokens.filter((queryToken) => (
+      haystackTokens.some((token) => token === queryToken || token.includes(queryToken) || queryToken.includes(token))
+    )).length;
+    return matched >= Math.min(queryTokens.length, queryTokens.length <= 2 ? 2 : Math.ceil(queryTokens.length * 0.65));
   }
 
   function tierFromPrompt(text) {
-    const black = /black\s*tier|blocked/i.test(text);
+    const black = /black\s*tier|blocked|黑名单|黑色\s*tier|黑色分层|屏蔽|暂停/i.test(text);
     if (black) return "BLACK TIER";
-    const match = text.match(/tier\s*([1-4])/i);
-    return match ? `Tier ${match[1]}` : null;
+    const match = text.match(/tier\s*([1-4一二三四])/i) ||
+      text.match(/(?:第\s*)?([一二三四1-4])\s*(?:层|级|档)/) ||
+      text.match(/(?:分层|层级|档位)\s*([一二三四1-4])/);
+    if (!match) return null;
+    const tier = { 一: "1", 二: "2", 三: "3", 四: "4" }[match[1]] || match[1];
+    return `Tier ${tier}`;
+  }
+
+  function wantsRecommendationList(text) {
+    const lower = String(text || "").toLowerCase();
+    const hasRankCommand = /\b(?:recommend|top|give|show|list|export|download|pull)\b/.test(lower) || /推荐|排行|排名|给我|显示|列出|拉取|导出|下载|筛选|前\s*\d+/.test(text);
+    const endsLikeOfferRequest = /\b(?:offers?|brands?|recommendations?)\s*$/.test(lower) || /(?:offer|offers|品牌|商家|推荐)\s*$/.test(text);
+    const hasMetricFilter = extractMetricFilters(text).length > 0;
+    if (!hasRankCommand && !endsLikeOfferRequest && !hasMetricFilter) return false;
+    return requestedRecommendationCount(text, 0) > 0 ||
+      /\b(?:offers?|brands?|recommendations?)\b/.test(lower) ||
+      /offer|offers|品牌|商家|推荐/.test(text) ||
+      hasMetricFilter ||
+      Boolean(tierFromPrompt(text)) ||
+      Boolean(categoryForPrompt(text));
   }
 
   function detectQueryIntent(userMessage) {
     const lower = userMessage.toLowerCase().trim();
     if (findByAsin(userMessage)) return "asin";
     if (findByMerchantId(userMessage)) return "merchant";
-    if (/payment|paid|unpaid|late|issue|cycle/.test(lower)) return "payment";
-    if (/recommend|push|focus|best|should we/.test(lower)) return "recommendation";
+    if (/payment|paid|unpaid|late|issue|cycle/.test(lower) || /付款|未付款|没付款|未支付|已付款|已支付|逾期|到期|待处理|支付|结算|款项|付款周期|支付周期|结算周期/.test(userMessage)) return "payment";
+    if (/recommend|push|focus|best|should we/.test(lower) || /推荐|排行|排名|最好|最佳|主推|重点|应该|筛选|前\s*\d+/.test(userMessage) || wantsRecommendationList(userMessage)) return "recommendation";
     if (tierFromPrompt(userMessage)) return "tier";
     if (categoryForPrompt(userMessage)) return "category";
     if (contextFollowup(lower)) return "merchant";
@@ -1070,16 +1685,22 @@
     if (priority >= 99) return -9999;
     if (offer.tier === "Tier 2" && highlightStatus(offer) === "Optimization only") return -9999;
 
+    const clicks = number(offer.clicks);
+    const orders = number(offer.orders);
+    const confidence = Math.min(1, Math.sqrt(Math.max(clicks, 0) / 250));
+
     let score = 100 - priority * 14;
-    score += Math.log10(number(offer.orders) + 1) * 12;
-    score += Math.log10(number(offer.clicks) + 1) * 3;
-    score += number(offer.conversionRate) * 260;
-    score += Math.min(number(offer.epc), 5) * 8;
+    score += Math.log10(orders + 1) * 12;
+    score += Math.log10(clicks + 1) * 3;
+    score += number(offer.conversionRate) * 260 * confidence;
+    score += Math.min(number(offer.epc), 5) * 8 * Math.max(confidence, 0.35);
     score += Math.min(number(offer.salesAmount), 100000) / 12000;
     score += Math.min(number(offer.atc), 500) / 80;
     score += offer.hasDiscount ? 7 : 0;
     score += offer.hasAsin ? 2 : 0;
     score += offer.recommendedLink ? 2 : 0;
+    score -= clicks > 0 && clicks < 25 ? 12 : 0;
+    score -= orders > 0 && orders < 5 ? 8 : 0;
     score -= hasPaymentRisk(offer) ? 32 : 0;
     score -= offer.trackingIssue ? 20 : 0;
     score -= offer.tier === "Tier 4" ? 40 : 0;
@@ -1094,6 +1715,22 @@
     return score;
   }
 
+  function compareRecommendationOffers(a, b, context = {}) {
+    const includeTier4 = context.includeTier4 || false;
+    const includeBlack = context.includeBlack || false;
+    return (
+      number(b.salesAmount) - number(a.salesAmount) ||
+      number(b.orders) - number(a.orders) ||
+      number(b.conversionRate) - number(a.conversionRate) ||
+      number(b.aov) - number(a.aov) ||
+      number(b.epc) - number(a.epc) ||
+      tierPriority(a, includeTier4, includeBlack) - tierPriority(b, includeTier4, includeBlack) ||
+      number(b.affCommission) - number(a.affCommission) ||
+      number(b.clicks) - number(a.clicks) ||
+      String(a.brand || "").localeCompare(String(b.brand || ""), undefined, { numeric: true, sensitivity: "base" })
+    );
+  }
+
   function sortedForCategory(category, options = {}) {
     const includeTier4 = options.includeTier4 || /tier 4|retest/i.test(options.prompt || "");
     const includeBlack = options.includeBlack || /black|blocked/i.test(options.prompt || "");
@@ -1102,13 +1739,7 @@
       .filter((offer) => !options.tier || offer.tier === options.tier)
       .filter((offer) => includeTier4 || offer.tier !== "Tier 4")
       .filter((offer) => includeBlack || offer.tier !== "BLACK TIER")
-      .sort((a, b) => (
-        tierPriority(a, includeTier4, includeBlack) - tierPriority(b, includeTier4, includeBlack) ||
-        number(b.orders) - number(a.orders) ||
-        number(b.conversionRate) - number(a.conversionRate) ||
-        number(b.salesAmount) - number(a.salesAmount) ||
-        number(b.epc) - number(a.epc)
-      ));
+      .sort((a, b) => compareRecommendationOffers(a, b, { includeTier4, includeBlack }));
   }
 
   function rankedRecommendations(pool, context = {}) {
@@ -1117,7 +1748,7 @@
       .filter((offer) => context.includeTier4 || offer.tier !== "Tier 4")
       .map((offer) => ({ offer, score: recommendationScore(offer, context) }))
       .filter((item) => item.score > -9999)
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => compareRecommendationOffers(a.offer, b.offer, context))
       .map((item) => item.offer);
   }
 
@@ -1141,8 +1772,9 @@
   function contextFollowup(lower) {
     if (!state.lastOffer) return false;
     if (/^tier\s*[1-4]\b|^black\s*tier\b/.test(lower)) return false;
-    if (/\b(it|its|this|that|the merchant|this merchant|that merchant)\b/.test(lower)) return true;
-    return /^(epc|aov|orders?|order count|cvr|conversion|payment|paid|category|tier|commission|revenue|clicks?|dpv|atc)\b/.test(lower);
+    if (/\b(it|its|this|that|the merchant|this merchant|that merchant)\b/.test(lower) || /^(它|它的|这个|这个商家|该商家|这个品牌|该品牌)/.test(lower)) return true;
+    return /^(epc|aov|orders?|order count|cvr|conversion|payment|paid|category|tier|commission|revenue|clicks?|dpv|atc)\b/.test(lower) ||
+      /^(订单|订单数|转化|转化率|转换率|付款|支付|未付款|已付款|品类|类别|分层|佣金|佣金率|收入|营收|销售额|点击|点击量|加购|详情页)/.test(lower);
   }
 
   function setContext(context) {
@@ -1212,10 +1844,10 @@
   }
 
   const contextColumns = [
-    { label: "Merchant", render: (o) => `<strong>${escapeHtml(o.brand || "")}</strong><br><small>${escapeHtml(o.merchantId || "")}</small>` },
+    { label: "Merchant", render: (o) => `<strong>${escapeHtml(o.brand || "")}</strong><br><small>${escapeHtml(o.merchantId || "")}</small><br><small>${escapeHtml(displayCategory(o))}</small>` },
     { label: "Tier", render: (o) => escapeHtml(tierGroup(o)) },
     { label: "Highlight", render: (o) => escapeHtml(highlightStatus(o)) },
-    { label: "Category", render: (o) => escapeHtml(o.category || "Uncategorized") },
+    { label: "Category", render: (o) => escapeHtml(displayCategory(o)) },
     { label: "AOV", render: (o) => shortMoney(o.aov) },
     { label: "EPC", render: (o) => shortEpc(o.epc) },
     { label: "CVR", render: (o) => shortPct(o.conversionRate) },
@@ -1249,6 +1881,13 @@
     const s = context.summary;
     const tierText = Object.entries(s.tierBreakdown).map(([tier, count]) => `${tier}: ${count}`).join(", ") || "not available";
     const tier2Text = Object.entries(s.tier2Breakdown).map(([status, count]) => `${status}: ${count}`).join(", ");
+    const filterText = [
+      metricFilterText(context.filters && context.filters.metricFilters),
+      paymentCycleFilterText(context.filters && context.filters.paymentCycleFilter)
+    ].filter(Boolean).join(", ");
+    const scopeText = context.filters && context.filters.exportCount
+      ? `<div class="context-note"><strong>Overview scope:</strong> ${Number(context.filters.exportCount).toLocaleString()} requested offers. The chat preview stays at 5.${filterText ? ` Filter: ${escapeHtml(filterText)}.` : ""}</div>`
+      : "";
     return statCards([
       ["Offers", String(s.totalOffers)],
       ["Revenue made", shortMoney(s.totalRevenue)],
@@ -1257,8 +1896,8 @@
       ["Blended EPC", shortEpc(s.blendedEpc)],
       ["Average CVR", shortPct(s.avgCvr)]
     ]) +
+    scopeText +
     `<div class="context-note"><strong>Tier breakdown:</strong> ${escapeHtml(tierText)}${tier2Text ? `<br><strong>Tier 2 highlights:</strong> ${escapeHtml(tier2Text)}` : ""}</div>` +
-    miniTable(rows, contextColumns) +
     insightList(rows);
   }
 
@@ -1269,7 +1908,7 @@
         ["Merchant ID", textValue(offer.merchantId)],
         ["Tier", tierGroup(offer)],
         ["Network", textValue(offer.network)],
-        ["Category", textValue(offer.category)],
+        ["Category", textValue(displayCategory(offer))],
         ["AOV", money(offer.aov)],
         ["EPC", epc(offer.epc)],
         ["CVR", pct(offer.conversionRate)],
@@ -1337,7 +1976,7 @@
       { label: "Revenue", render: (o) => shortMoney(o.revenueMade) },
       { label: "Commission made", render: (o) => shortMoney(o.commissionMade) },
       { label: "Cycle", render: (o) => escapeHtml(o.paymentCycle ? `${o.paymentCycle} days` : "-") },
-      { label: "Available", render: (o) => escapeHtml(o.paymentAvailabilityDate || "not available") }
+      { label: "Expected payment date", render: (o) => escapeHtml(o.expectedPaymentDate || o.paymentAvailabilityDate || "not available") }
     ]);
   }
 
@@ -1390,47 +2029,6 @@
       const top = topRecommendations(rows, {});
       els.recBox.innerHTML = renderRecommendationStats(buildRecommendationContext(top, {}));
     }
-    renderContextChart(context.items.length ? context.items : getFiltered(), context.type);
-  }
-
-  function renderContextChart(rows, contextType) {
-    const canvas = els.chart;
-    if (contextType === "payment") {
-      canvas.hidden = true;
-      return;
-    }
-    canvas.hidden = false;
-    const ctx = canvas.getContext("2d");
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "#fbfcfc";
-    ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = "#dce3e7";
-    ctx.lineWidth = 1;
-    for (let i = 1; i < 4; i += 1) {
-      ctx.beginPath();
-      ctx.moveTo(42, 18 + ((h - 50) * i) / 4);
-      ctx.lineTo(w - 18, 18 + ((h - 50) * i) / 4);
-      ctx.stroke();
-    }
-    ctx.fillStyle = "#687277";
-    ctx.font = "12px system-ui";
-    ctx.fillText("CVR", 10, 18);
-    ctx.fillText("EPC", w - 44, h - 10);
-
-    const limit = contextType === "default" ? 120 : 60;
-    const sample = rows.filter((offer) => number(offer.epc) > 0 || number(offer.conversionRate) > 0).slice(0, limit);
-    const maxEpc = Math.max(0.2, ...sample.map((offer) => number(offer.epc)));
-    const maxCvr = Math.max(0.02, ...sample.map((offer) => number(offer.conversionRate)));
-    sample.forEach((offer) => {
-      const x = 42 + (Math.min(number(offer.epc), maxEpc) / maxEpc) * (w - 66);
-      const y = h - 32 - (Math.min(number(offer.conversionRate), maxCvr) / maxCvr) * (h - 58);
-      ctx.beginPath();
-      ctx.fillStyle = hasPaymentRisk(offer) ? "rgba(185,75,95,.78)" : offer.tier === "Tier 1" ? "rgba(23,123,115,.78)" : "rgba(49,95,155,.62)";
-      ctx.arc(x, y, contextType === "merchant" || contextType === "recommendation" ? 6 : 4, 0, Math.PI * 2);
-      ctx.fill();
-    });
   }
 
   function paymentByMonthText(offer) {
@@ -1447,7 +2045,7 @@
       ["Merchant ID", textValue(offer.merchantId)],
       ["Merchant name", textValue(offer.brand)],
       ["Tier", textValue(tierGroup(offer))],
-      ["Category", textValue(offer.category)],
+      ["Category", textValue(displayCategory(offer))],
       ["Network", textValue(offer.network)],
       ["AOV", money(offer.aov)],
       ["EPC", epc(offer.epc)],
@@ -1479,7 +2077,16 @@
     const rows = fieldRows(offer)
       .map(([label, value]) => `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</li>`)
       .join("");
-    return `<div class="merchant-card"><h4>${escapeHtml(offer.brand || "Merchant")} ${extra}</h4><ul>${rows}</ul></div>`;
+    return `<div class="merchant-card"><h4>${escapeHtml(offer.brand || "Merchant")} ${extra}</h4><ul>${rows}</ul></div>` +
+      downloadCardHtml([offer], {
+        downloadType: "offers",
+        filePrefix: "merchant_offer",
+        exportScope: offer.brand || offer.merchantId || "merchant",
+        sheetName: "Merchant"
+      }, {
+        title: "Merchant file",
+        description: "1 offer row with metrics, payment status, ASINs, and recommendation notes."
+      });
   }
 
   function resultTable(rows, columns) {
@@ -1502,6 +2109,18 @@
     { label: "Payment", render: (o) => escapeHtml(o.paymentStatus || "not available") }
   ];
 
+  const paymentCycleOfferColumns = [
+    { label: "Merchant", render: (o) => `<strong>${escapeHtml(o.brand || "")}</strong><br><small>${escapeHtml(o.merchantId || "")}</small>` },
+    { label: "Cycle", render: (o) => escapeHtml(o.paymentCycle ? `${o.paymentCycle} days` : "-") },
+    { label: "Tier", render: (o) => escapeHtml(tierGroup(o)) },
+    { label: "Category", render: (o) => escapeHtml(o.category || "Uncategorized") },
+    { label: "EPC", render: (o) => shortEpc(o.epc) },
+    { label: "AOV", render: (o) => shortMoney(o.aov) },
+    { label: "Orders", render: (o) => number(o.orders).toLocaleString() },
+    { label: "Revenue", render: (o) => shortMoney(o.salesAmount) },
+    { label: "Payment", render: (o) => escapeHtml(o.paymentStatus || "not available") }
+  ];
+
   const paymentColumns = [
     { label: "Merchant", render: (o) => `<strong>${escapeHtml(o.merchantName || "")}</strong><br><small>${escapeHtml(o.merchantId || "")}</small>` },
     { label: "Tier", render: (o) => escapeHtml(o.tier || "Unknown") },
@@ -1510,12 +2129,12 @@
     { label: "Revenue made", render: (o) => shortMoney(o.revenueMade) },
     { label: "Commission made", render: (o) => shortMoney(o.commissionMade) },
     { label: "Cycle", render: (o) => escapeHtml(o.paymentCycle ? `${o.paymentCycle} days` : "-") },
-    { label: "Available", render: (o) => escapeHtml(o.paymentAvailabilityDate || "not available") },
+    { label: "Expected payment date", render: (o) => escapeHtml(o.expectedPaymentDate || o.paymentAvailabilityDate || "not available") },
     { label: "Notes", render: (o) => escapeHtml(o.notes || "not available") }
   ];
 
   function paymentStatusRank(status) {
-    const ranks = { Unpaid: 1, Partial: 2, Unknown: 3, Pending: 4, Paid: 5 };
+    const ranks = { Overdue: 1, Unpaid: 2, Partial: 3, Unknown: 4, Pending: 5, Paid: 6 };
     return ranks[status] || 9;
   }
 
@@ -1530,11 +2149,22 @@
   function findPaymentMerchantMatches(query) {
     const cleaned = query
       .replace(/\b(what|is|are|the|payment|payments|cycle|for|merchant|paid|unpaid|status|of|this|that|issue|issues|does|have|has|already|which|offers|with|show|all|late|pending|partial|unknown|remaining|expected|commission|revenue|march|april|may|june|july|august|report|month|in|on|not)\b/gi, " ")
+      .replace(/付款|支付|结算|周期|商家|品牌|已付款|未付款|没付款|未支付|状态|问题|逾期|到期|待处理|部分付款|未知|剩余|预期|佣金|收入|三月|四月|五月|六月|七月|八月|报表|月份|查看|显示|全部|所有|请|帮我|哪些|哪个|是否|已经|还没|没有|未/g, " ")
       .trim();
     if (cleaned.length < 3) return [];
     const merchants = Array.from(new Map(getPaymentRecords().map((record) => [
       record.merchantId || normalize(record.merchantName),
-      { brand: record.merchantName, merchantId: record.merchantId, category: record.category, network: record.network }
+      {
+        brand: record.merchantName,
+        merchantId: record.merchantId,
+        category: record.category,
+        categoryPath: record.categoryPath,
+        mainCategory: record.mainCategory,
+        subCategory: record.subCategory,
+        mainCategoryCn: record.mainCategoryCn,
+        subCategoryCn: record.subCategoryCn,
+        network: record.network
+      }
     ])).values());
     return merchants
       .map((merchant) => ({ merchant, score: fuzzyScore(cleaned, merchant) }))
@@ -1551,14 +2181,28 @@
     const rows = matches.map((item) => item.offer);
     state.lastRows = rows;
     setContext(buildCategoryContext("closest matches", rows));
-    return `I found multiple close merchant matches. Which one do you mean?<br>${resultTable(rows, compactColumns.slice(0, 5))}`;
+    return `I found multiple close merchant matches. Which one do you mean?` +
+      downloadCardHtml(rows, {
+        downloadType: "offers",
+        filePrefix: "merchant_matches",
+        exportScope: query || "closest_matches",
+        sheetName: "Closest Matches"
+      }, {
+        title: "Closest matches file",
+        description: `${rows.length.toLocaleString()} matching offers from this lookup.`
+      }) +
+      resultTable(rows, compactColumns.slice(0, 5));
   }
 
   function requestedRecommendationCount(prompt, fallback = 5) {
     const text = String(prompt || "");
     const patterns = [
-      /\b(?:top|give|show|list|export|download)\s+(\d{1,4})\b/i,
-      /\b(\d{1,4})\s+(?:offers?|brands?|recommendations?)\b/i
+      /\b(?:top|give|show|list|export|download|pull)\s+(?:me\s+)?(?:the\s+)?(?:top\s+)?(\d{1,4})\b/i,
+      /\b(\d{1,4})\s+(?:offers?|brands?|recommendations?)\b/i,
+      /\b(\d{1,4})\s+tier\s*[1-4]\s*(?:offers?|brands?|recommendations?)?\b/i,
+      /(?:推荐|给我|显示|列出|拉取|导出|下载|筛选|找)\s*(\d{1,4})\s*(?:个|款|条)?/i,
+      /前\s*(\d{1,4})\s*(?:个|款|条)?/i,
+      /(\d{1,4})\s*(?:个|款|条)?\s*(?:offer|offers|品牌|商家|推荐)/i
     ];
     for (const pattern of patterns) {
       const match = pattern.exec(text);
@@ -1578,18 +2222,20 @@
     const ranked = rankedRecommendations(rows, context);
     const exportRows = ranked.slice(0, requestedCount);
     const top = exportRows.slice(0, 5);
-    setContext(buildRecommendationContext(top, { ...context, requestedCount, exportCount: exportRows.length }));
+    setContext(buildRecommendationContext(exportRows, { ...context, requestedCount, exportCount: exportRows.length }));
     if (!top.length) return "I found no offers that fit this recommendation request with the current filters.";
     const label = context.category ? ` for ${escapeHtml(context.category)}` : context.tier ? ` from ${escapeHtml(context.tier)}` : "";
     const downloadId = registerRecommendationDownload(exportRows, context, requestedCount);
     const exportNote = exportRows.length < requestedCount
       ? `I found ${exportRows.length.toLocaleString()} offers that fit.`
       : `The Excel download includes all ${exportRows.length.toLocaleString()} requested offers.`;
+    const filterText = metricFilterText(context.metricFilters);
+    const filterNote = filterText ? ` Filtered by ${filterText}.` : "";
     return `<p><strong>Recommendation preview${label}:</strong> showing the top ${top.length.toLocaleString()} here so the chat stays readable. ${escapeHtml(exportNote)}</p>` +
       `<div class="download-card">
         <div>
           <strong>Full recommendation file</strong>
-          <span>${exportRows.length.toLocaleString()} offers ranked by tier, EPC, CVR, revenue, ATC, DPV, and payment risk.</span>
+          <span>${exportRows.length.toLocaleString()} offers ranked by revenue, orders, CVR, AOV, then EPC.${escapeHtml(filterNote)}</span>
         </div>
         <button class="download-xlsx-button" type="button" data-download-id="${escapeHtml(downloadId)}">Download Excel</button>
       </div>` +
@@ -1597,12 +2243,51 @@
         <strong>${index + 1}. ${escapeHtml(offer.brand || "")}</strong> - ${escapeHtml(tierGroup(offer))}
         <ul>
           <li><strong>Merchant ID:</strong> ${escapeHtml(offer.merchantId || "not available")}</li>
-          <li><strong>Key metrics:</strong> AOV ${shortMoney(offer.aov)}, EPC ${shortEpc(offer.epc)}, clicks ${number(offer.clicks).toLocaleString()}, orders ${number(offer.orders).toLocaleString()}, CVR ${shortPct(offer.conversionRate)}, revenue ${shortMoney(offer.salesAmount)}</li>
+          <li><strong>Key metrics:</strong> AOV ${shortMoney(offer.aov)}, EPC ${shortEpc(offer.epc)}, commission ${shortPct(offer.commissionRate)}, clicks ${number(offer.clicks).toLocaleString()}, orders ${number(offer.orders).toLocaleString()}, CVR ${shortPct(offer.conversionRate)}, revenue ${shortMoney(offer.salesAmount)}</li>
           <li><strong>Why recommended:</strong> ${escapeHtml(whyRecommended(offer, context))}</li>
           <li><strong>Best traffic angle:</strong> ${escapeHtml(bestAngle(offer, context))}</li>
           <li><strong>Caution / next step:</strong> ${escapeHtml(caution(offer))}</li>
         </ul>
       </div>`).join("");
+  }
+
+  function paymentCycleOfferAnswer(prompt, filter) {
+    const rows = offers
+      .filter((offer) => paymentCycleFilterMatches(offer, filter))
+      .sort((a, b) => number(a.paymentCycle) - number(b.paymentCycle) || tierPriority(a, true, true) - tierPriority(b, true, true) || number(b.orders) - number(a.orders));
+    const requestedCount = requestedRecommendationCount(prompt, Math.min(rows.length, MAX_RECOMMENDATION_EXPORT));
+    const exportRows = rows.slice(0, Math.min(requestedCount, MAX_RECOMMENDATION_EXPORT));
+    const top = exportRows.slice(0, 5);
+    const filterText = paymentCycleFilterText(filter);
+    const scopeOperator = { "<": "below", "<=": "up-to", ">": "above", ">=": "at-least" }[filter.operator] || "cycle";
+    const scope = `payment-cycle-${scopeOperator}-${filter.threshold}-days`;
+    setContext(buildRecommendationContext(exportRows, {
+      exportScope: scope,
+      exportCount: exportRows.length,
+      requestedCount,
+      paymentCycleFilter: filter,
+      includeTier4: true,
+      includeBlack: true
+    }));
+    if (!top.length) return `I found no offers with ${escapeHtml(filterText)}.`;
+    const downloadId = registerRecommendationDownload(exportRows, {
+      exportScope: scope,
+      paymentCycleFilter: filter,
+      includeTier4: true,
+      includeBlack: true
+    }, requestedCount);
+    const foundText = exportRows.length < rows.length
+      ? `showing ${exportRows.length.toLocaleString()} of ${rows.length.toLocaleString()} matching offers`
+      : `${exportRows.length.toLocaleString()} matching offers`;
+    return `<p><strong>Payment cycle preview:</strong> ${escapeHtml(filterText)}, sorted shortest first; ${escapeHtml(foundText)}. Showing the top ${top.length.toLocaleString()} here so the chat stays readable.</p>` +
+      `<div class="download-card">
+        <div>
+          <strong>Full payment-cycle file</strong>
+          <span>${exportRows.length.toLocaleString()} offers with ${escapeHtml(filterText)}, sorted from shortest payment cycle.</span>
+        </div>
+        <button class="download-xlsx-button" type="button" data-download-id="${escapeHtml(downloadId)}">Download Excel</button>
+      </div>` +
+      resultTable(top, paymentCycleOfferColumns);
   }
 
   function paymentAnswer(prompt) {
@@ -1623,22 +2308,42 @@
       const title = `${merchant.brand}${month ? ` - ${month}` : ""}`;
       const cycleText = cycle ? `${cycle.paymentCycle} days` : t("payment.notAvailable", "not available in current data");
       return `<p><strong>${escapeHtml(title)}</strong> ${escapeHtml(t("payment.summary", "payment summary"))}: ${s.recordCount.toLocaleString()} ${escapeHtml(t("payment.recordsAcross", "records across"))} ${s.merchantCount.toLocaleString()} ${escapeHtml(t("payment.merchants", "merchants"))}; ${escapeHtml(t("payment.unpaid", "unpaid"))} ${s.unpaidMerchantCount.toLocaleString()}, ${escapeHtml(t("payment.pendingCount", "pending"))} ${s.pendingMerchantCount.toLocaleString()}, ${escapeHtml(t("payment.overdue", "overdue"))} ${s.overdueCount.toLocaleString()}. ${escapeHtml(t("payment.cycle", "payment cycle"))}: ${escapeHtml(cycleText)}.</p>` +
+        downloadCardHtml(rows, {
+          downloadType: "payments",
+          filePrefix: "payment_records",
+          exportScope: title,
+          sheetName: "Payments",
+          downloadColumns: paymentExportColumns()
+        }, {
+          title: "Payment records file",
+          description: `${rows.length.toLocaleString()} payment records for this merchant/month lookup.`
+        }) +
         resultTable(rows, paymentColumns);
     }
 
     if (month) rows = rows.filter((record) => record.reportMonth === month);
     if (tier) rows = rows.filter((record) => record.tier === tier);
-    if (/unpaid|issue|late|not paid|overdue|due/.test(lower)) rows = rows.filter((record) => record.paymentStatus === "Unpaid" || isPaymentOverdue(record));
-    else if (/partial/.test(lower)) rows = rows.filter((record) => record.paymentStatus === "Partial");
-    else if (/pending|not available yet|before due/.test(lower)) rows = rows.filter((record) => record.paymentStatus === "Pending");
-    else if (/already paid|\bpaid\b/.test(lower)) rows = rows.filter((record) => record.paymentStatus === "Paid");
-    else rows = rows.filter((record) => record.paymentStatus !== "Paid" || /all|summary|overview/.test(lower));
+    if (/unpaid|issue|late|not paid|overdue|due/.test(lower) || /未付款|没付款|未支付|逾期|到期|需跟进/.test(prompt)) rows = rows.filter((record) => record.paymentStatus === "Unpaid" || isPaymentOverdue(record));
+    else if (/partial/.test(lower) || /部分付款|部分支付/.test(prompt)) rows = rows.filter((record) => record.paymentStatus === "Partial");
+    else if (/pending|not available yet|before due/.test(lower) || /待处理|未到期|还没到|等待/.test(prompt)) rows = rows.filter((record) => record.paymentStatus === "Pending");
+    else if (/already paid|\bpaid\b/.test(lower) || /已付款|已支付/.test(prompt)) rows = rows.filter((record) => record.paymentStatus === "Paid");
+    else rows = rows.filter((record) => record.paymentStatus !== "Paid" || /all|summary|overview/.test(lower) || /全部|所有|汇总|概览/.test(prompt));
 
     rows = sortPaymentRows(rows).slice(0, 60);
     setContext(buildPaymentContext(rows, prompt));
     const s = updatePaymentSummary(rows);
     const label = month ? `${month} payment records` : "Payment records";
     return `<p><strong>${escapeHtml(state.language === "zh" ? `${optionText(month || "") || t("payments.records", "Payment records")}` : label)}:</strong> ${s.recordCount.toLocaleString()} ${escapeHtml(t("payment.recordsAcross", "records across"))} ${s.merchantCount.toLocaleString()} ${escapeHtml(t("payment.merchants", "merchants"))}; ${escapeHtml(t("payment.unpaid", "unpaid"))} ${s.unpaidMerchantCount.toLocaleString()}, ${escapeHtml(t("payment.pendingCount", "pending"))} ${s.pendingMerchantCount.toLocaleString()}, ${escapeHtml(t("payment.overdue", "overdue"))} ${s.overdueCount.toLocaleString()}.</p>` +
+      downloadCardHtml(rows, {
+        downloadType: "payments",
+        filePrefix: "payment_records",
+        exportScope: label,
+        sheetName: "Payments",
+        downloadColumns: paymentExportColumns()
+      }, {
+        title: "Payment records file",
+        description: `${rows.length.toLocaleString()} payment records matching this request.`
+      }) +
       resultTable(rows, paymentColumns);
   }
 
@@ -1661,19 +2366,22 @@
     const exact = findByMerchantId(prompt);
     if (exact) return merchantOverview(exact);
 
+    const paymentCycleFilter = extractPaymentCycleFilter(prompt);
+    if (paymentCycleFilter) return paymentCycleOfferAnswer(prompt, paymentCycleFilter);
+
     if (contextFollowup(lower)) {
-      if (/payment|paid|unpaid|cycle|late|due/.test(lower)) {
+      if (/payment|paid|unpaid|cycle|late|due/.test(lower) || /付款|支付|未付款|已付款|周期|逾期|到期/.test(prompt)) {
         return paymentAnswer(`${state.lastOffer.brand} ${prompt}`);
       }
       if (/epc/.test(lower)) {
         setContext(buildMerchantContext(state.lastOffer));
         return `<strong>${escapeHtml(state.lastOffer.brand)}</strong> EPC is ${epc(state.lastOffer.epc)}.`;
       }
-      if (/aov/.test(lower)) {
+      if (/aov|客单价/.test(lower)) {
         setContext(buildMerchantContext(state.lastOffer));
         return `<strong>${escapeHtml(state.lastOffer.brand)}</strong> AOV is ${money(state.lastOffer.aov)}.`;
       }
-      if (/order/.test(lower)) {
+      if (/order|订单/.test(lower)) {
         setContext(buildMerchantContext(state.lastOffer));
         return `<strong>${escapeHtml(state.lastOffer.brand)}</strong> order count is ${number(state.lastOffer.orders).toLocaleString()}.`;
       }
@@ -1682,10 +2390,11 @@
 
     const category = categoryForPrompt(prompt);
     const tier = tierFromPrompt(prompt);
-    const wantsTier4 = /tier 4|retest/i.test(prompt);
-    const wantsBlack = /black|blocked/i.test(prompt);
+    const wantsTier4 = /tier 4|retest|第四层|第四级|四层|四级|重测|重新测试/i.test(prompt);
+    const wantsBlack = /black|blocked|黑名单|黑色|屏蔽|暂停/i.test(prompt);
     const wantsRecommendation = intent === "recommendation";
-    const wantsGoogle = /google|keyword|brand keyword|search/.test(lower);
+    const wantsGoogle = /google|keyword|brand keyword|search/.test(lower) || /关键词|搜索|品牌词/.test(prompt);
+    const metricFilters = extractMetricFilters(prompt);
 
     if (intent === "payment") {
       return paymentAnswer(prompt);
@@ -1694,7 +2403,8 @@
     if (wantsRecommendation) {
       let pool = category ? sortedForCategory(category, { includeTier4: wantsTier4, includeBlack: wantsBlack, prompt, tier }) : offers;
       if (tier) pool = pool.filter((offer) => offer.tier === tier);
-      return recommendationHtml(pool, { category, tier, google: wantsGoogle, includeTier4: wantsTier4, includeBlack: wantsBlack, requestedCount: requestedRecommendationCount(prompt), prompt });
+      pool = applyMetricFilters(pool, metricFilters);
+      return recommendationHtml(pool, { category, tier, google: wantsGoogle, includeTier4: wantsTier4, includeBlack: wantsBlack, metricFilters, requestedCount: requestedRecommendationCount(prompt), prompt });
     }
 
     if (tier) {
@@ -1702,30 +2412,61 @@
         .filter((offer) => offer.tier === tier)
         .filter((offer) => wantsTier4 || offer.tier !== "Tier 4" || tier === "Tier 4")
         .filter((offer) => wantsBlack || offer.tier !== "BLACK TIER" || tier === "BLACK TIER")
-        .sort((a, b) => recommendationScore(b, { includeTier4: true, includeBlack: true }) - recommendationScore(a, { includeTier4: true, includeBlack: true }));
+        .sort((a, b) => compareRecommendationOffers(a, b, { includeTier4: true, includeBlack: true }));
       setContext(buildTierContext(tier, rows));
-      return `${escapeHtml(tier)} overview and top candidates:<br>${resultTable(topRecommendations(rows, { tier, includeTier4: true, includeBlack: true }), compactColumns)}`;
+      const topRows = topRecommendations(rows, { tier, includeTier4: true, includeBlack: true });
+      return `${escapeHtml(tier)} overview and top candidates:` +
+        downloadCardHtml(rows, {
+          downloadType: "offers",
+          filePrefix: "tier_offers",
+          exportScope: tier,
+          sheetName: tier
+        }, {
+          title: `${tier} file`,
+          description: `${rows.length.toLocaleString()} ${tier} offers from the current offer data.`
+        }) +
+        resultTable(topRows, compactColumns);
     }
 
     if (category) {
-      const rows = sortedForCategory(category, { includeTier4: wantsTier4, includeBlack: wantsBlack, prompt }).slice(0, 40);
-      setContext(buildCategoryContext(category, rows));
-      return `Relevant <strong>${escapeHtml(category)}</strong> offers, sorted by tier priority and performance:<br>${resultTable(rows.slice(0, 25), compactColumns)}`;
+      const rows = sortedForCategory(category, { includeTier4: wantsTier4, includeBlack: wantsBlack, prompt });
+      const previewRows = rows.slice(0, 25);
+      setContext(buildCategoryContext(category, rows.slice(0, 80)));
+      return `Relevant <strong>${escapeHtml(category)}</strong> offers, sorted by tier priority and performance:` +
+        downloadCardHtml(rows, {
+          downloadType: "offers",
+          filePrefix: "category_offers",
+          exportScope: category,
+          sheetName: "Category Offers"
+        }, {
+          title: `${category} file`,
+          description: `${rows.length.toLocaleString()} matching category offers.`
+        }) +
+        resultTable(previewRows, compactColumns);
     }
 
-    if (/high epc|high aov|low conversion|low cvr|tracking issue|has asin|discount/.test(lower)) {
+    if (/high epc|high aov|low conversion|low cvr|tracking issue|has asin|discount/.test(lower) || /高\s*epc|高\s*aov|低转化|低转换|跟踪问题|追踪问题|有\s*asin|折扣|优惠/.test(prompt)) {
       const rows = offers
-        .filter((offer) => !/tracking issue/.test(lower) || offer.trackingIssue)
-        .filter((offer) => !/has asin/.test(lower) || offer.hasAsin)
-        .filter((offer) => !/discount/.test(lower) || offer.hasDiscount)
+        .filter((offer) => !(/tracking issue/.test(lower) || /跟踪问题|追踪问题/.test(prompt)) || offer.trackingIssue)
+        .filter((offer) => !(/has asin/.test(lower) || /有\s*asin/.test(prompt)) || offer.hasAsin)
+        .filter((offer) => !(/discount/.test(lower) || /折扣|优惠/.test(prompt)) || offer.hasDiscount)
         .sort((a, b) => {
-          if (/low conversion|low cvr/.test(lower)) return number(a.conversionRate) - number(b.conversionRate);
-          if (/high aov/.test(lower)) return number(b.aov) - number(a.aov);
+          if (/low conversion|low cvr/.test(lower) || /低转化|低转换/.test(prompt)) return number(a.conversionRate) - number(b.conversionRate);
+          if (/high aov/.test(lower) || /高\s*aov/.test(prompt)) return number(b.aov) - number(a.aov);
           return number(b.epc) - number(a.epc);
-        })
-        .slice(0, 30);
+        });
+      const previewRows = rows.slice(0, 30);
       setContext(buildCategoryContext("filtered result", rows));
-      return resultTable(rows, compactColumns);
+      return downloadCardHtml(rows, {
+        downloadType: "offers",
+        filePrefix: "filtered_offers",
+        exportScope: lower.slice(0, 48) || "filtered_result",
+        sheetName: "Filtered Offers"
+      }, {
+        title: "Filtered offers file",
+        description: `${rows.length.toLocaleString()} matching offers for this filter.`
+      }) +
+      resultTable(previewRows, compactColumns);
     }
 
     if (lower.length < 3 || /^(help|hello|hi|what can you do)\??$/.test(lower)) {
@@ -1771,10 +2512,10 @@
     els.table.innerHTML = rows.slice(0, 80).map((offer) => {
       const paidClass = hasPaymentRisk(offer) ? "unpaid" : hasPaidSignal(offer) ? "paid" : "neutral";
       return `<tr>
-        <td><strong>${escapeHtml(offer.brand || "")}</strong><p>${escapeHtml(offer.merchantId || "")}</p></td>
+        <td><strong>${escapeHtml(offer.brand || "")}</strong><p>${escapeHtml(offer.merchantId || "")}</p><p>${escapeHtml(displayCategory(offer))}</p></td>
         <td><span class="badge tier">${escapeHtml(tierGroup(offer))}</span></td>
         <td>${escapeHtml(offer.network || "")}</td>
-        <td>${escapeHtml(offer.category || "Uncategorized")}</td>
+        <td>${escapeHtml(displayCategory(offer))}</td>
         <td>${shortEpc(offer.epc)}</td>
         <td>${shortMoney(offer.aov)}</td>
         <td>${shortPct(offer.conversionRate)}</td>
@@ -1810,37 +2551,53 @@
     renderAll();
   }
 
-  function downloadFilteredCsv() {
-    const rows = getFiltered();
-    const columns = ["brand", "merchantId", "tier", "network", "category", "epc", "aov", "conversionRate", "orders", "salesAmount", "affCommission", "paymentStatus", "paymentCycle", "recommendedLink", "topAsins"];
-    const csv = [columns.join(",")]
-      .concat(rows.map((offer) => columns.map((col) => `"${String(Array.isArray(offer[col]) ? offer[col].join(" ") : offer[col] ?? "").replace(/"/g, '""')}"`).join(",")))
-      .join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "filtered_offers.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+  function safeFilePart(value, fallback = "export") {
+    const text = String(value || fallback).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    return text || fallback;
   }
 
-  function safeFilePart(value) {
-    const text = String(value || "recommendations").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    return text || "recommendations";
+  function safeSheetName(value) {
+    const name = String(value || "Export").replace(/[\[\]:*?/\\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 31);
+    return name || "Export";
+  }
+
+  function todayFileStamp() {
+    return isoDate(PAYMENT_TODAY) || new Date().toISOString().slice(0, 10);
   }
 
   function registerRecommendationDownload(rows, context = {}, requestedCount = rows.length) {
     const id = `recommendation-${++state.downloadSequence}`;
-    const today = isoDate(PAYMENT_TODAY) || new Date().toISOString().slice(0, 10);
-    const scope = context.category || context.tier || "top";
+    const today = todayFileStamp();
+    const type = context.downloadType || "offers";
+    const scope = context.exportScope || context.category || context.tier || "top";
+    const prefix = context.filePrefix || (type === "payments" ? "payment_records" : type === "sheet" ? "sheet_records" : "offer_recommendations");
+    const rowLabel = type === "payments" ? "records" : type === "sheet" ? "rows" : "offers";
+    const columns = context.downloadColumns || (type === "payments" ? paymentExportColumns() : recommendationExportColumns());
+    const sheetName = context.sheetName || (type === "payments" ? "Payments" : type === "sheet" ? "Sheet Records" : "Recommendations");
     state.recommendationDownloads[id] = {
       rows,
-      context,
+      context: { ...context, columns, sheetName },
       requestedCount,
-      filename: `offer_recommendations_${safeFilePart(scope)}_${rows.length}_offers_${today}.xlsx`
+      columns,
+      sheetName,
+      filename: `${prefix}_${safeFilePart(scope)}_${rows.length}_${rowLabel}_${today}.xlsx`
     };
     return id;
+  }
+
+  function downloadCardHtml(rows, context = {}, options = {}) {
+    if (!rows || !rows.length) return "";
+    const downloadId = registerRecommendationDownload(rows, context, context.requestedCount || rows.length);
+    const title = options.title || "Download file";
+    const description = options.description || `${rows.length.toLocaleString()} rows available for Excel download.`;
+    const buttonLabel = options.buttonLabel || "Download Excel";
+    return `<div class="download-card">
+      <div>
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(description)}</span>
+      </div>
+      <button class="download-xlsx-button" type="button" data-download-id="${escapeHtml(downloadId)}">${escapeHtml(buttonLabel)}</button>
+    </div>`;
   }
 
   function recommendationExportColumns() {
@@ -1850,7 +2607,11 @@
       ["Merchant ID", (offer) => offer.merchantId || ""],
       ["Tier", (offer) => tierGroup(offer)],
       ["Network", (offer) => offer.network || ""],
-      ["Category", (offer) => offer.category || "Uncategorized"],
+      ["Category", (offer) => displayCategory(offer)],
+      ["Main Category", (offer) => offer.mainCategory || ""],
+      ["Subcategory", (offer) => offer.subCategory || ""],
+      ["Main Category CN", (offer) => offer.mainCategoryCn || ""],
+      ["Subcategory CN", (offer) => offer.subCategoryCn || ""],
       ["EPC", (offer) => number(offer.epc)],
       ["AOV", (offer) => number(offer.aov)],
       ["Conversion Rate", (offer) => number(offer.conversionRate)],
@@ -1860,6 +2621,7 @@
       ["Orders", (offer) => number(offer.orders)],
       ["Revenue", (offer) => number(offer.salesAmount)],
       ["Commission", (offer) => number(offer.affCommission)],
+      ["Commission Rate", (offer) => number(offer.commissionRate)],
       ["Payment Status", (offer) => offer.paymentStatus || ""],
       ["Payment Cycle", (offer) => offer.paymentCycle || ""],
       ["Recommended Link", (offer) => offer.recommendedLink || ""],
@@ -1869,6 +2631,48 @@
       ["Best Traffic Angle", (offer, index, context) => bestAngle(offer, context)],
       ["Caution", (offer) => caution(offer)]
     ];
+  }
+
+  function paymentExportColumns() {
+    return [
+      ["Merchant ID", (record) => record.merchantId || ""],
+      ["Merchant", (record) => record.merchantName || ""],
+      ["Tier", (record) => record.tier || "Unknown"],
+      ["Network", (record) => record.network || ""],
+      ["Category", (record) => displayCategory(record)],
+      ["Main Category", (record) => record.mainCategory || ""],
+      ["Subcategory", (record) => record.subCategory || ""],
+      ["Month", (record) => `${optionText(record.reportMonth)} ${record.reportYear || ""}`.trim()],
+      ["Status", (record) => statusText(record.paymentStatus || "Unknown")],
+      ["Revenue Made", (record) => number(record.revenueMade)],
+      ["Commission Made", (record) => number(record.commissionMade)],
+      ["Paid Amount", (record) => number(record.paidAmount)],
+      ["Remaining Amount", (record) => number(record.remainingAmount)],
+      ["Payment Cycle Days", (record) => number(record.paymentCycle)],
+      ["Expected Payment Date", (record) => record.expectedPaymentDate || record.paymentAvailabilityDate || ""],
+      ["Last Checked", (record) => record.lastCheckedDate || ""],
+      ["Notes", (record) => record.notes || ""]
+    ];
+  }
+
+  function objectExportColumns(rows, preferredHeaders = []) {
+    const headers = preferredHeaders.length
+      ? preferredHeaders
+      : Array.from(rows.reduce((set, row) => {
+          Object.keys(row || {}).forEach((key) => set.add(key));
+          return set;
+        }, new Set()));
+    return headers.map((header) => [header, (row) => row && row[header] != null ? row[header] : ""]);
+  }
+
+  function gridRowsForExport(grid) {
+    const maxCols = grid.reduce((max, row) => Math.max(max, row.length), 0);
+    const headers = Array.from({ length: maxCols }, (_, index) => columnLabel(index));
+    const rows = grid.map((row) => headers.reduce((record, header, index) => {
+      record[header] = row[index] || "";
+      return record;
+    }, {}));
+    return { rows, headers };
   }
 
   function xmlEscape(value) {
@@ -1887,7 +2691,7 @@
   }
 
   function worksheetXml(rows, context = {}) {
-    const columns = recommendationExportColumns();
+    const columns = context.columns || recommendationExportColumns();
     const sheetRows = [
       columns.map(([header]) => header),
       ...rows.map((offer, index) => columns.map(([, getter]) => getter(offer, index, context)))
@@ -1908,11 +2712,11 @@
 </worksheet>`;
   }
 
-  function workbookXml() {
+  function workbookXml(sheetName = "Recommendations") {
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>
-    <sheet name="Recommendations" sheetId="1" r:id="rId1"/>
+    <sheet name="${xmlEscape(safeSheetName(sheetName))}" sheetId="1" r:id="rId1"/>
   </sheets>
 </workbook>`;
   }
@@ -2034,29 +2838,111 @@
     return createZip([
       { name: "[Content_Types].xml", data: contentTypesXml() },
       { name: "_rels/.rels", data: rootRelsXml() },
-      { name: "xl/workbook.xml", data: workbookXml() },
+      { name: "xl/workbook.xml", data: workbookXml(context.sheetName) },
       { name: "xl/_rels/workbook.xml.rels", data: workbookRelsXml() },
       { name: "xl/styles.xml", data: stylesXml() },
       { name: "xl/worksheets/sheet1.xml", data: worksheetXml(rows, context) }
     ]);
   }
 
-  function downloadRecommendationXlsx(downloadId) {
-    const item = state.recommendationDownloads[downloadId];
-    if (!item || !item.rows || !item.rows.length) return;
-    const workbook = createRecommendationWorkbook(item.rows, item.context);
+  function triggerWorkbookDownload(workbook, filename) {
     const blob = new Blob([workbook], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = item.filename;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  function downloadRowsAsXlsx(rows, context = {}) {
+    if (!rows || !rows.length) return;
+    const type = context.downloadType || "sheet";
+    const prefix = context.filePrefix || (type === "payments" ? "payment_records" : type === "offers" ? "offers" : "sheet_records");
+    const scope = context.exportScope || context.sheetName || type;
+    const rowLabel = type === "offers" ? "offers" : type === "payments" ? "records" : "rows";
+    const filename = context.filename || `${prefix}_${safeFilePart(scope)}_${rows.length}_${rowLabel}_${todayFileStamp()}.xlsx`;
+    const workbook = createRecommendationWorkbook(rows, {
+      ...context,
+      columns: context.downloadColumns || context.columns || (type === "payments" ? paymentExportColumns() : type === "offers" ? recommendationExportColumns() : objectExportColumns(rows)),
+      sheetName: context.sheetName || "Export"
+    });
+    triggerWorkbookDownload(workbook, filename);
+  }
+
+  function downloadFilteredXlsx() {
+    const rows = getFiltered();
+    downloadRowsAsXlsx(rows, {
+      downloadType: "offers",
+      filePrefix: "filtered_offers",
+      exportScope: "current_dashboard",
+      sheetName: "Filtered Offers"
+    });
+  }
+
+  function downloadPaymentsXlsx() {
+    const rows = getFilteredPayments();
+    downloadRowsAsXlsx(rows, {
+      downloadType: "payments",
+      filePrefix: "payment_records",
+      exportScope: "current_filters",
+      sheetName: "Payments",
+      downloadColumns: paymentExportColumns()
+    });
+  }
+
+  function downloadSheetTargetsXlsx() {
+    const headers = ["Month", "Tier", "Brand Count", "Total Clicks", "Order Count", "Revenue", "Avg Conversion", "New Tier Entries", "Tier Exits", "Target"];
+    const rows = sortReportRows(filteredTargetRecords(), state.targetSort, (row, key) => row[key]);
+    downloadRowsAsXlsx(rows, {
+      downloadType: "sheet",
+      filePrefix: "monthly_targets",
+      exportScope: state.targetFilters.month === "all" ? "all_months" : state.targetFilters.month,
+      sheetName: "Monthly Targets",
+      downloadColumns: objectExportColumns(rows, headers)
+    });
+  }
+
+  function downloadTierSheetXlsx() {
+    const sheet = sheetByName(state.selectedTierPage);
+    if (!sheet) return;
+    if (sheet.headers && sheet.headers.length) {
+      const rows = sortReportRows(getFilteredTierSheetRows(sheet), state.tierSheetSort, (row, key) => row[key]);
+      const headers = displayHeadersForSheet(sheet, sheet.headers);
+      downloadRowsAsXlsx(rows, {
+        downloadType: "sheet",
+        filePrefix: "tier_records",
+        exportScope: state.selectedTierPage,
+        sheetName: state.selectedTierPage,
+        downloadColumns: objectExportColumns(rows, headers)
+      });
+      return;
+    }
+    const gridExport = gridRowsForExport(sheet.grid || []);
+    downloadRowsAsXlsx(gridExport.rows, {
+      downloadType: "sheet",
+      filePrefix: "tier_records",
+      exportScope: state.selectedTierPage,
+      sheetName: state.selectedTierPage,
+      downloadColumns: objectExportColumns(gridExport.rows, gridExport.headers)
+    });
+  }
+
+  function downloadRecommendationXlsx(downloadId) {
+    const item = state.recommendationDownloads[downloadId];
+    if (!item || !item.rows || !item.rows.length) return;
+    const workbook = createRecommendationWorkbook(item.rows, {
+      ...item.context,
+      columns: item.columns || item.context.columns,
+      sheetName: item.sheetName || item.context.sheetName
+    });
+    triggerWorkbookDownload(workbook, item.filename);
   }
 
   function paymentStatusClass(status) {
     const text = String(status || "").toLowerCase();
     if (text === "paid") return "paid";
+    if (text === "overdue") return "overdue";
     if (text === "unpaid") return "unpaid";
     if (text === "partial" || text === "pending") return "warn";
     return "neutral";
@@ -2130,7 +3016,7 @@
     els.paymentRows.innerHTML = rows.map((record) => (
       `<tr data-merchant-id="${escapeHtml(record.merchantId || record.merchantName)}">
         <td>${escapeHtml(record.merchantId || "")}</td>
-        <td><strong>${escapeHtml(record.merchantName || "")}</strong><p>${escapeHtml(record.category || "Uncategorized")}</p></td>
+        <td><strong>${escapeHtml(record.merchantName || "")}</strong><p>${escapeHtml(displayCategory(record))}</p></td>
         <td>${escapeHtml(record.network || "")}</td>
         <td><span class="badge tier">${escapeHtml(record.tier || "Unknown")}</span></td>
         <td>${escapeHtml(`${optionText(record.reportMonth)} ${record.reportYear}`)}</td>
@@ -2138,7 +3024,7 @@
         <td>${shortMoney(record.revenueMade)}</td>
         <td>${shortMoney(record.commissionMade)}</td>
         <td>${escapeHtml(record.paymentCycle ? `${record.paymentCycle} days` : "-")}</td>
-        <td>${escapeHtml(record.paymentAvailabilityDate || "-")}</td>
+        <td>${escapeHtml(record.expectedPaymentDate || record.paymentAvailabilityDate || "-")}</td>
         <td>${escapeHtml(record.lastCheckedDate || "-")}</td>
         <td>${escapeHtml(record.notes || "-")}</td>
       </tr>`
@@ -2241,14 +3127,18 @@
 
   function renderSheetTable(sheet, titleEl, countEl, headEl, rowsEl, customRows = null) {
     const headers = sheet.headers || [];
-    const rows = customRows || sheet.rows || [];
+    const displayHeaders = displayHeadersForSheet(sheet, headers);
+    const sourceRows = customRows || sheet.rows || [];
+    const rows = headers.length
+      ? sortReportRows(sourceRows, state.tierSheetSort, (row, key) => row[key])
+      : sourceRows;
     const grid = sheet.grid || [];
     titleEl.textContent = `${sheet.name} ${t("sheet.targetRecords", "Sheet Records")}`;
     if (headers.length) {
-      countEl.textContent = `${rows.length.toLocaleString()} rows / ${headers.length.toLocaleString()} columns`;
-      headEl.innerHTML = `<tr>${headers.map((header) => `<th>${escapeHtml(labelText(header))}</th>`).join("")}</tr>`;
+      countEl.textContent = `${rows.length.toLocaleString()} rows / ${displayHeaders.length.toLocaleString()} columns`;
+      headEl.innerHTML = `<tr>${displayHeaders.map((header) => sortableHeaderHtml(header, state.tierSheetSort, "tier")).join("")}</tr>`;
       rowsEl.innerHTML = rows.map((row) => (
-        `<tr>${headers.map((header) => `<td>${escapeHtml(row[header] ?? "")}</td>`).join("")}</tr>`
+        `<tr class="${escapeHtml(tierRowClass(sheet, row))}">${displayHeaders.map((header) => `<td>${sheetCellHtml(sheet, row, header)}</td>`).join("")}</tr>`
       )).join("");
       return;
     }
@@ -2261,6 +3151,70 @@
     rowsEl.innerHTML = grid.map((row) => (
       `<tr>${Array.from({ length: maxCols }, (_, index) => `<td>${escapeHtml(row[index] || "")}</td>`).join("")}</tr>`
     )).join("");
+  }
+
+  function tier2PhaseKind(sheet, row) {
+    if (!sheet || sheet.name !== "Tier 2") return "";
+    const phase = String(row.Phase || "").trim().toLowerCase();
+    if (phase.includes("growing")) return "green";
+    if (phase.includes("stable")) return "yellow";
+    if (phase.includes("declining")) return "red";
+    return "";
+  }
+
+  function displayHeadersForSheet(sheet, headers) {
+    if (!sheet || sheet.name !== "Tier 1") return headers || [];
+    const desired = ["May Revenue", "June Revenue", "Completion Rate"];
+    const output = [];
+    (headers || []).forEach((header) => {
+      if (desired.includes(header)) return;
+      output.push(header);
+      if (header === "Order count") {
+        desired.forEach((extra) => {
+          if ((headers || []).includes(extra)) output.push(extra);
+        });
+      }
+    });
+    return output;
+  }
+
+  function tierReasonText(row) {
+    return String(row["Tier Reason"] || row.Reason || row.Recommendation || "").trim();
+  }
+
+  function tierRowHighlightKind(sheet, row) {
+    if (!sheet) return "";
+    const reason = tierReasonText(row).toLowerCase();
+    const rank = parseSheetNumber(row["Original Rank"]);
+    if (sheet.name === "Tier 1") {
+      return rank >= 40 ? "green" : "";
+    }
+    if (sheet.name === "Tier 2") {
+      return tier2PhaseKind(sheet, row);
+    }
+    if (sheet.name === "Tier 3") {
+      if (/new june raw offer with orders|moved from tier 4/.test(reason)) return "green";
+      if (/moved from tier 2|declined|declining/.test(reason)) return "red";
+      return "";
+    }
+    if (sheet.name === "Tier 4") {
+      if (/new june raw offer/.test(reason)) return "green";
+      if (/moved to tier 4|moved\/kept in tier 4|0 orders|no june .*raw data/.test(reason)) return "red";
+      return "";
+    }
+    return "";
+  }
+
+  function tierRowClass(sheet, row) {
+    const kind = tierRowHighlightKind(sheet, row);
+    return kind ? `tier-highlight-row tier-highlight-${kind}` : "";
+  }
+
+  function sheetCellHtml(sheet, row, header) {
+    const value = formatSheetCell(header, row[header]);
+    const kind = header === "Phase" ? tier2PhaseKind(sheet, row) : "";
+    if (!kind || !value) return escapeHtml(value);
+    return `<span class="phase-pill phase-${escapeHtml(kind)}">${escapeHtml(value)}</span>`;
   }
 
   function renderTierSheetTable(sheet) {
@@ -2387,7 +3341,7 @@
 
   function renderSheetPage() {
     refreshTargetFilters();
-    const rows = filteredTargetRecords();
+    const rows = sortReportRows(filteredTargetRecords(), state.targetSort, (row, key) => row[key]);
     if (!rows.length) {
       els.sheetPageTitle.textContent = t("sheet.targets", "Monthly Targets");
       els.sheetPageSubtitle.textContent = t("sheet.noTargets", "No target rows found in the current sheet export");
@@ -2408,9 +3362,9 @@
     const headers = ["Month", "Tier", "Brand Count", "Total Clicks", "Order Count", "Revenue", "Avg Conversion", "New Tier Entries", "Tier Exits", "Target"];
     els.sheetTableTitle.textContent = t("sheet.targetRecords", "Monthly Target Records");
     els.sheetTableCount.textContent = `${rows.length.toLocaleString()} ${t("sheet.targetRows", "target rows")}`;
-    els.sheetGridHead.innerHTML = `<tr>${headers.map((header) => `<th>${escapeHtml(labelText(header))}</th>`).join("")}</tr>`;
+    els.sheetGridHead.innerHTML = `<tr>${headers.map((header) => sortableHeaderHtml(header, state.targetSort, "target")).join("")}</tr>`;
     els.sheetGridRows.innerHTML = rows.map((row) => (
-      `<tr>${headers.map((header) => `<td>${escapeHtml(row[header] || "")}</td>`).join("")}</tr>`
+      `<tr>${headers.map((header) => `<td>${escapeHtml(formatSheetCell(header, row[header]))}</td>`).join("")}</tr>`
     )).join("");
   }
 
@@ -2439,7 +3393,7 @@
   function init() {
     fillSelect(els.tier, uniqueValues("tier"));
     fillSelect(els.network, uniqueValues("network"));
-    fillSelect(els.category, uniqueValues("category"));
+    fillSelect(els.category, uniqueCategoryValues());
     refreshPaymentFilterOptions();
     refreshTargetFilters();
     setDatasetStamp();
@@ -2486,6 +3440,8 @@
     els.tierSheetCountry.addEventListener("change", () => { state.tierSheetFilters.country = els.tierSheetCountry.value; renderTierPage(state.selectedTierPage); });
     els.tierSheetMinEpc.addEventListener("input", () => { state.tierSheetFilters.minEpc = els.tierSheetMinEpc.value; renderTierPage(state.selectedTierPage); });
     els.tierSheetMinRevenue.addEventListener("input", () => { state.tierSheetFilters.minRevenue = els.tierSheetMinRevenue.value; renderTierPage(state.selectedTierPage); });
+    els.sheetGridHead.addEventListener("click", handleReportSortClick);
+    els.tierSheetHead.addEventListener("click", handleReportSortClick);
     els.paymentMonth.addEventListener("change", () => { state.payments.month = els.paymentMonth.value; renderPaymentsPage(); });
     els.paymentNetwork.addEventListener("change", () => { state.payments.network = els.paymentNetwork.value; renderPaymentsPage(); });
     els.paymentTier.addEventListener("change", () => { state.payments.tier = els.paymentTier.value; renderPaymentsPage(); });
@@ -2497,7 +3453,10 @@
     els.paymentSync.addEventListener("click", () => refreshLevantaPayments());
     els.languageToggle.addEventListener("click", toggleLanguage);
     els.reset.addEventListener("click", resetFilters);
-    els.download.addEventListener("click", downloadFilteredCsv);
+    els.download.addEventListener("click", downloadFilteredXlsx);
+    els.paymentDownload.addEventListener("click", downloadPaymentsXlsx);
+    els.sheetDownload.addEventListener("click", downloadSheetTargetsXlsx);
+    els.tierDownload.addEventListener("click", downloadTierSheetXlsx);
     document.querySelectorAll(".sort-button").forEach((button) => {
       button.addEventListener("click", () => {
         state.sort = button.dataset.sort;

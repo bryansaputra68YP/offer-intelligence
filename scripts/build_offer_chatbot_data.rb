@@ -13,6 +13,7 @@ category_csv = ARGV[3] || "work/levanta_brand_categories_api.csv"
 output_js = ARGV[4] || "outputs/offer_chatbot/chatbot_data.js"
 sheet_block_dir = ARGV[5] || "work/backend_epc_sheet_blocks"
 all_invoice_json = ARGV[6] || "outputs/levanta_invoice_items_march_april_2026.json"
+feishu_category_csv = ARGV[7] || "work/feishu_merchant_categories.csv"
 
 def num(value)
   text = value.to_s.strip
@@ -76,19 +77,34 @@ def payment_availability_date(year, month_name, payment_cycle = nil)
   ((Date.new(year.to_i, month_number, 1) >> 2) + 2).iso8601
 end
 
+def normalized_payment_cycle(payment_cycle, network)
+  return 105 if network.to_s.strip.downcase == "wayward"
+  cycle = payment_cycle.to_f
+  cycle.positive? ? cycle.round : 60
+end
+
 def payment_month_key(year, month_name)
   month_number = MONTH_NUMBERS[month_name.to_s]
   return nil unless year && month_number
   format("%04d-%02d", year.to_i, month_number)
 end
 
-def payment_status(raw_status, expected_amount, paid_amount, availability_date)
+def payment_status(raw_status, expected_amount, paid_amount, availability_date, baseline_date = nil)
   raw = raw_status.to_s.downcase
-  return "Paid" if raw == "paid" || (expected_amount.to_f > 0 && paid_amount.to_f >= expected_amount.to_f)
-  return "Partial" if paid_amount.to_f > 0 && paid_amount.to_f < expected_amount.to_f
+  expected = expected_amount.to_f
+  paid = paid_amount.to_f
+  remaining = [expected - paid, 0].max
+  cycle_due = availability_date ? Date.parse(availability_date) : nil
+  baseline_due = baseline_date ? Date.parse(baseline_date) : cycle_due
+
+  return "Paid" if raw == "paid" || (expected.positive? && paid >= expected - 0.01)
   return "Unknown" if raw.empty? && expected_amount.nil?
-  return "Pending" if availability_date && Date.today < Date.parse(availability_date)
-  "Unpaid"
+  return "Pending" if expected <= 0 && paid <= 0 && raw.include?("pending")
+  return "Unknown" if expected <= 0 && paid <= 0
+  return "Pending" if baseline_due && Date.today <= baseline_due
+  return "Overdue" if cycle_due && Date.today > cycle_due && remaining > 0.01
+  return "Partial" if paid.positive? && remaining > 0.01
+  remaining > 0.01 || raw.include?("pending") || raw.include?("late") || raw.include?("unpaid") ? "Unpaid" : "Unknown"
 rescue ArgumentError
   "Unknown"
 end
@@ -199,6 +215,32 @@ if File.exist?(category_csv)
   end
 end
 
+feishu_category_by_mid = {}
+feishu_category_by_brand = {}
+if File.exist?(feishu_category_csv)
+  CSV.read(feishu_category_csv, headers: true).each do |row|
+    merchant_id = merchant_key(row["merchantId"])
+    merchant_name = clean_text(row["merchantName"])
+    info = {
+      "merchantId" => merchant_id,
+      "merchantName" => merchant_name,
+      "network" => clean_text(row["network"]),
+      "mainCategory" => clean_text(row["mainCategory"]),
+      "subCategory" => clean_text(row["subCategory"]),
+      "mainCategoryCn" => clean_text(row["mainCategoryCn"]),
+      "subCategoryCn" => clean_text(row["subCategoryCn"]),
+      "mainCategoryBsr" => clean_text(row["mainCategoryBsr"]),
+      "subcategoryBsr" => clean_text(row["subcategoryBsr"]),
+      "asin" => clean_text(row["asin"])
+    }
+    next if merchant_id.empty? && merchant_name.to_s.empty?
+    next if info["mainCategory"].to_s.empty? && info["subCategory"].to_s.empty?
+
+    feishu_category_by_mid[merchant_id] = info unless merchant_id.empty?
+    feishu_category_by_brand[normalize_brand(merchant_name)] = info unless merchant_name.to_s.empty?
+  end
+end
+
 sheet_blocks_by_tier_row = {}
 block_start_rows = { "Tier 1" => 10, "Tier 2" => 13, "Tier 3" => 10 }
 block_start_rows.each do |tier, header_row|
@@ -217,10 +259,13 @@ offers = CSV.read(brand_csv, headers: true).map do |row|
   paid = not_paid_by_brand[normalize_brand(row["brand"])]
   invoice_status = invoice_status_by_brand[normalize_brand(row["brand"])]
   lev_cat = levanta_category_by_brand[normalize_brand(row["brand"])]
+  feishu_cat = feishu_category_by_mid[mid] || feishu_category_by_brand[normalize_brand(row["brand"])]
   sheet_block = sheet_blocks_by_tier_row[[row["tier"], row["row_number"].to_i]] || {}
 
   network = backend && backend["backend_network"].to_s.strip != "" ? backend["backend_network"] : row["network_or_agency"]
-  category = lev_cat&.fetch("topCategory", nil) || clean_text(sheet_block["Category"]) || row["category"].to_s.strip
+  category_path = feishu_cat ? [feishu_cat["mainCategory"], feishu_cat["subCategory"]].compact.reject(&:empty?).join(" > ") : nil
+  feishu_category = feishu_cat && (clean_text(feishu_cat["subCategory"]) || clean_text(feishu_cat["mainCategory"]))
+  category = feishu_category || lev_cat&.fetch("topCategory", nil) || clean_text(sheet_block["Category"]) || row["category"].to_s.strip
   category = "Uncategorized" if category.empty?
 
   clicks = num(backend && backend["backend_clicks"]) || num(row["clicks"])
@@ -236,7 +281,7 @@ offers = CSV.read(brand_csv, headers: true).map do |row|
   recommendation = clean_text(row["recommendation"]) || clean_text(sheet_block["Recommendation"])
   recommended_link = clean_text(sheet_block["Recommended Link"])
   phase = clean_text(sheet_block["Phase"])
-  payment_cycle = num(sheet_block["Payment Cycle"])
+  payment_cycle = normalized_payment_cycle(num(sheet_block["Payment Cycle"]), network)
   success_rate = num(sheet_block["Success Rate"])
   success_rate_june = num(sheet_block["Success Rate June"])
   publisher_count = clean_text(sheet_block["Publisher Count"])
@@ -272,6 +317,16 @@ offers = CSV.read(brand_csv, headers: true).map do |row|
     "brand" => row["brand"],
     "network" => network.to_s.strip.empty? ? "Unknown" : network,
     "category" => category,
+    "categoryPath" => category_path,
+    "mainCategory" => feishu_cat&.fetch("mainCategory", nil),
+    "subCategory" => feishu_cat&.fetch("subCategory", nil),
+    "mainCategoryCn" => feishu_cat&.fetch("mainCategoryCn", nil),
+    "subCategoryCn" => feishu_cat&.fetch("subCategoryCn", nil),
+    "mainCategoryBsr" => feishu_cat&.fetch("mainCategoryBsr", nil),
+    "subcategoryBsr" => feishu_cat&.fetch("subcategoryBsr", nil),
+    "feishuCategoryMerchantName" => feishu_cat&.fetch("merchantName", nil),
+    "feishuCategoryAsin" => feishu_cat&.fetch("asin", nil),
+    "categorySource" => feishu_cat ? "Feishu" : (lev_cat ? "Levanta" : "Sheet"),
     "levantaCategory" => lev_cat&.fetch("topCategory", nil),
     "allLevantaCategories" => lev_cat&.fetch("categories", nil),
     "clicks" => round(clicks, 0),
@@ -295,7 +350,7 @@ offers = CSV.read(brand_csv, headers: true).map do |row|
     "completionRate" => round(num(row["completion_rate"]) || num(sheet_block["Completion Rate"]), 6),
     "timeline" => clean_text(row["timeline"]),
     "phase" => phase,
-    "paymentCycle" => payment_cycle ? payment_cycle.round : nil,
+    "paymentCycle" => payment_cycle,
     "publisherCount" => publisher_count,
     "successRate" => round(success_rate, 6),
     "publisherCountJune" => publisher_count_june,
@@ -335,16 +390,19 @@ payment_records = invoice_rows.map do |row|
   commission = num(row["total_commission"] || row["commission"])
   expected = commission
   raw_status = row["raw_status"] || row["payment_status"]
-  payment_cycle = matched_offer&.fetch("paymentCycle", nil)
+  payment_cycle = normalized_payment_cycle(matched_offer&.fetch("paymentCycle", nil), matched_offer&.fetch("network", nil) || "Levanta")
   availability = payment_availability_date(report_year, report_month, payment_cycle)
+  baseline_availability = payment_availability_date(report_year, report_month, 60)
   paid_amount = raw_status.to_s.downcase == "paid" ? expected : 0.0
   remaining = expected && paid_amount ? [expected - paid_amount, 0].max : nil
-  status = payment_status(raw_status, expected, paid_amount, availability)
+  status = payment_status(raw_status, expected, paid_amount, availability, baseline_availability)
   notes =
     if status == "Pending"
-      "Payment not due until #{availability}#{payment_cycle ? " based on #{payment_cycle}-day payment cycle" : ""}."
+      "Payment is still inside the 60-day network baseline."
     elsif status == "Unpaid"
-      "Payment is due and needs follow-up."
+      "Payment has passed the 60-day baseline but is not past the #{payment_cycle}-day payment cycle."
+    elsif status == "Overdue"
+      "Payment is past the #{payment_cycle}-day payment cycle and needs follow-up."
     elsif status == "Paid"
       "Payment confirmed by Levanta invoice data."
     elsif status == "Partial"
@@ -360,6 +418,11 @@ payment_records = invoice_rows.map do |row|
     "network" => matched_offer&.fetch("network", nil) || "Levanta",
     "tier" => matched_offer&.fetch("tier", nil) || "Unknown",
     "category" => matched_offer&.fetch("category", nil) || "Uncategorized",
+    "categoryPath" => matched_offer&.fetch("categoryPath", nil),
+    "mainCategory" => matched_offer&.fetch("mainCategory", nil),
+    "subCategory" => matched_offer&.fetch("subCategory", nil),
+    "mainCategoryCn" => matched_offer&.fetch("mainCategoryCn", nil),
+    "subCategoryCn" => matched_offer&.fetch("subCategoryCn", nil),
     "reportMonth" => report_month,
     "reportYear" => report_year.to_i,
     "reportMonthKey" => payment_month_key(report_year, report_month),
@@ -370,11 +433,15 @@ payment_records = invoice_rows.map do |row|
     "remainingAmount" => round(remaining, 2),
     "paymentCycle" => payment_cycle,
     "paymentAvailabilityDate" => availability,
+    "expectedPaymentDate" => availability,
     "paymentStatus" => status,
     "rawStatus" => raw_status,
     "lastCheckedDate" => Date.today.iso8601,
     "notes" => notes
   })
+end
+payment_records = payment_records.select do |record|
+  %w[commissionMade expectedPaymentAmount paidAmount remainingAmount].any? { |key| num(record[key]).to_f.positive? }
 end
 
 payment_summary = {
@@ -384,9 +451,11 @@ payment_summary = {
   "totalPaidAmount" => round(payment_records.sum { |record| num(record["paidAmount"]).to_f }, 2),
   "totalUnpaidAmount" => round(payment_records.select { |record| record["paymentStatus"] == "Unpaid" }.sum { |record| num(record["remainingAmount"]).to_f }, 2),
   "totalPendingAmount" => round(payment_records.select { |record| record["paymentStatus"] == "Pending" }.sum { |record| num(record["remainingAmount"]).to_f }, 2),
+  "totalOverdueAmount" => round(payment_records.select { |record| record["paymentStatus"] == "Overdue" }.sum { |record| num(record["remainingAmount"]).to_f }, 2),
   "unpaidMerchantCount" => payment_records.select { |record| record["paymentStatus"] == "Unpaid" }.map { |record| record["merchantId"] }.uniq.length,
   "pendingMerchantCount" => payment_records.select { |record| record["paymentStatus"] == "Pending" }.map { |record| record["merchantId"] }.uniq.length,
-  "paidMerchantCount" => payment_records.select { |record| record["paymentStatus"] == "Paid" }.map { |record| record["merchantId"] }.uniq.length
+  "paidMerchantCount" => payment_records.select { |record| record["paymentStatus"] == "Paid" }.map { |record| record["merchantId"] }.uniq.length,
+  "overdueMerchantCount" => payment_records.select { |record| record["paymentStatus"] == "Overdue" }.map { |record| record["merchantId"] }.uniq.length
 }
 
 tiers = offers.group_by { |offer| offer["tier"] }.transform_values(&:length)
@@ -403,6 +472,7 @@ summary = {
   "notPaidMonths" => offers.flat_map { |offer| offer["paymentRiskMonths"] }.compact.uniq,
   "backendMatchedCount" => offers.count { |offer| backend_by_mid.key?(offer["merchantId"]) },
   "levantaCategorizedCount" => offers.count { |offer| offer["levantaCategory"] },
+  "feishuCategorizedCount" => offers.count { |offer| offer["mainCategory"] || offer["subCategory"] },
   "paymentSummary" => payment_summary
 }
 
@@ -412,7 +482,8 @@ payload = {
     "tiers" => File.basename(brand_csv),
     "backendEpc" => File.basename(backend_csv),
     "payments" => File.basename(not_paid_csv),
-    "levantaCategories" => File.exist?(category_csv) ? File.basename(category_csv) : nil
+    "levantaCategories" => File.exist?(category_csv) ? File.basename(category_csv) : nil,
+    "feishuCategories" => File.exist?(feishu_category_csv) ? File.basename(feishu_category_csv) : nil
   },
   "offers" => offers,
   "paymentRecords" => payment_records

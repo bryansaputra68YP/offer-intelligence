@@ -5,7 +5,14 @@ import os
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 
-from server import fetch_invoice_items, months_from_query, normalize_invoice_item, payment_summary
+from server import (
+    fetch_invoice_items,
+    has_payable_payment_amount,
+    months_from_query,
+    normalize_invoice_item,
+    payment_summary,
+    with_pending_placeholders,
+)
 
 
 class handler(BaseHTTPRequestHandler):
@@ -27,9 +34,10 @@ class handler(BaseHTTPRequestHandler):
 
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        months = months_from_query(query)
         records = []
         try:
-            for month_name, zero_based_month, year in months_from_query(query):
+            for month_name, zero_based_month, year in months:
                 for item in fetch_invoice_items(zero_based_month, year, api_key):
                     records.append(normalize_invoice_item(item, month_name, zero_based_month, year))
         except HTTPError as error:
@@ -39,6 +47,8 @@ class handler(BaseHTTPRequestHandler):
         except (URLError, TimeoutError, json.JSONDecodeError, OSError) as error:
             self.send_json(502, {"ok": False, "source": "levanta-api", "error": str(error)})
             return
+
+        records = [record for record in with_pending_placeholders(records, months) if has_payable_payment_amount(record)]
 
         self.send_json(
             200,
