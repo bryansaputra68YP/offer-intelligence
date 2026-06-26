@@ -443,8 +443,9 @@ p {
 
 .main-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.04fr) minmax(360px, 0.96fr);
   gap: 14px;
+  align-items: stretch;
 }
 
 .chat-panel,
@@ -620,7 +621,10 @@ p {
 }
 
 .insight-panel {
-  display: none;
+  display: grid;
+  gap: 10px;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 620px;
   padding: 14px;
 }
 
@@ -635,23 +639,17 @@ p {
   font-weight: 800;
 }
 
-#offerChart {
-  display: block;
-  width: 100%;
-  height: 260px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fbfcfc;
+.table-download-button {
+  min-height: 34px;
 }
 
 .recommendation-box {
-  margin-top: 10px;
   display: grid;
   gap: 8px;
 }
 
 .context-panel {
-  max-height: 330px;
+  max-height: none;
   overflow: auto;
   padding-right: 2px;
 }
@@ -1000,6 +998,95 @@ th {
   z-index: 1;
 }
 
+.table-sort-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.table-sort-button:hover,
+.table-sort-button.active {
+  color: var(--blue);
+}
+
+.sort-indicator {
+  flex: 0 0 auto;
+  color: var(--blue);
+  font-size: 10px;
+}
+
+.sheet-table tr.tier-highlight-row td:first-child,
+.sheet-table tr.tier2-phase-row td:first-child {
+  border-left: 4px solid transparent;
+}
+
+.sheet-table tr.tier-highlight-green td,
+.sheet-table tr.tier2-phase-green td {
+  background: rgba(23, 123, 115, 0.07);
+}
+
+.sheet-table tr.tier-highlight-green td:first-child,
+.sheet-table tr.tier2-phase-green td:first-child {
+  border-left-color: var(--teal);
+}
+
+.sheet-table tr.tier-highlight-yellow td,
+.sheet-table tr.tier2-phase-yellow td {
+  background: rgba(181, 130, 24, 0.1);
+}
+
+.sheet-table tr.tier-highlight-yellow td:first-child,
+.sheet-table tr.tier2-phase-yellow td:first-child {
+  border-left-color: var(--amber);
+}
+
+.sheet-table tr.tier-highlight-red td,
+.sheet-table tr.tier2-phase-red td {
+  background: rgba(185, 75, 95, 0.1);
+}
+
+.sheet-table tr.tier-highlight-red td:first-child,
+.sheet-table tr.tier2-phase-red td:first-child {
+  border-left-color: var(--rose);
+}
+
+.phase-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.phase-green {
+  background: var(--green-soft);
+  color: var(--teal);
+}
+
+.phase-yellow {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.phase-red {
+  background: var(--rose-soft);
+  color: var(--rose);
+}
+
 td strong {
   display: block;
   font-size: 13px;
@@ -1027,6 +1114,11 @@ td strong {
 }
 
 .badge.unpaid {
+  background: var(--rose-soft);
+  color: var(--rose);
+}
+
+.badge.overdue {
   background: var(--rose-soft);
   color: var(--rose);
 }
@@ -1070,6 +1162,10 @@ td strong {
 
   .main-grid {
     grid-template-columns: 1fr;
+  }
+
+  .insight-panel {
+    min-height: auto;
   }
 
   .payment-summary {

@@ -54,6 +54,43 @@ def money(value):
     return round(number(value), 2)
 
 
+def first_present_number(source, keys):
+    for key in keys:
+        value = source.get(key)
+        if value is None or value == "":
+            continue
+        return money(value)
+    return None
+
+
+def levanta_revenue_made(item):
+    return first_present_number(
+        item,
+        (
+            "revenueMade",
+            "sales",
+            "revenue",
+            "salesAmount",
+            "totalSales",
+        ),
+    ) or 0.0
+
+
+def levanta_commission_made(item):
+    direct = first_present_number(
+        item,
+        (
+            "commissionMade",
+            "totalCommission",
+            "commissionOwed",
+            "expectedPaymentAmount",
+        ),
+    )
+    if direct is not None:
+        return direct
+    return money(number(item.get("commission")) + number(item.get("cpcCommission")))
+
+
 def normalize(value):
     return "".join(ch for ch in str(value or "").lower().replace("&", "and") if ch.isalnum())
 
@@ -97,9 +134,18 @@ def availability_date(year, zero_based_month, payment_cycle=None):
     return dt.date(y, m, 3).isoformat()
 
 
-def payment_status(raw_status, expected, paid, available_date):
+def normalized_payment_cycle(value=None, network=None):
+    if str(network or "").strip().lower() == "wayward":
+        return 105
+    cycle = number(value)
+    return int(round(cycle)) if cycle > 0 else 60
+
+
+def payment_status(raw_status, expected, paid, available_date, baseline_date=None):
     raw = str(raw_status or "").lower()
-    due = dt.date.today() >= dt.date.fromisoformat(available_date)
+    today = dt.date.today()
+    cycle_due = dt.date.fromisoformat(available_date) if available_date else None
+    baseline_due = dt.date.fromisoformat(baseline_date) if baseline_date else cycle_due
     remaining = max(0.0, expected - paid)
     if raw == "paid" or (expected > 0 and paid >= expected - 0.01 and "late" not in raw and "unpaid" not in raw):
         return "Paid"
@@ -107,32 +153,45 @@ def payment_status(raw_status, expected, paid, available_date):
         if "pending" in raw:
             return "Pending"
         return "Unknown"
+    if baseline_due and today <= baseline_due:
+        return "Pending"
+    if cycle_due and today > cycle_due and remaining > 0.01:
+        return "Overdue"
     if paid > 0 and remaining > 0.01:
         return "Partial"
-    if not due or "pending" in raw:
-        return "Pending"
-    if "late" in raw or "unpaid" in raw or due:
-        return "Unpaid"
-    return "Unknown"
+    return "Unpaid" if remaining > 0.01 or "pending" in raw or "late" in raw or "unpaid" in raw else "Unknown"
 
 
 def payment_merchant_key(record):
     return str(record.get("merchantId") or normalize(record.get("merchantName") or record.get("brand"))).strip()
 
 
+def has_payable_payment_amount(record):
+    return any(
+        number(record.get(key)) > 0
+        for key in ("commissionMade", "expectedPaymentAmount", "paidAmount", "remainingAmount")
+    )
+
+
 def pending_placeholder_record(source, month_name, zero_based_month, year):
     merchant_id = str(source.get("merchantId") or "").strip()
     merchant_name = str(source.get("merchantName") or source.get("brand") or merchant_id or "Unknown merchant").strip()
     offer = OFFERS_BY_ID.get(merchant_id) or OFFERS_BY_BRAND.get(normalize(merchant_name)) or {}
-    payment_cycle = source.get("paymentCycle") or offer.get("paymentCycle") or ""
+    network = source.get("network") or offer.get("network") or "Levanta"
+    payment_cycle = normalized_payment_cycle(source.get("paymentCycle") or offer.get("paymentCycle"), network)
     month_key = f"{year}-{zero_based_month + 1:02d}"
     return {
         "id": f"{merchant_id or normalize(merchant_name)}::{month_key}::pending-placeholder",
         "merchantId": merchant_id,
         "merchantName": merchant_name,
-        "network": "Levanta",
+        "network": network,
         "tier": source.get("tier") or offer.get("tier") or "Unknown",
         "category": source.get("category") or offer.get("category") or offer.get("levantaCategory") or "Uncategorized",
+        "categoryPath": source.get("categoryPath") or offer.get("categoryPath"),
+        "mainCategory": source.get("mainCategory") or offer.get("mainCategory"),
+        "subCategory": source.get("subCategory") or offer.get("subCategory"),
+        "mainCategoryCn": source.get("mainCategoryCn") or offer.get("mainCategoryCn"),
+        "subCategoryCn": source.get("subCategoryCn") or offer.get("subCategoryCn"),
         "reportMonth": month_name,
         "reportYear": year,
         "reportMonthKey": month_key,
@@ -143,6 +202,7 @@ def pending_placeholder_record(source, month_name, zero_based_month, year):
         "remainingAmount": 0,
         "paymentCycle": payment_cycle,
         "paymentAvailabilityDate": availability_date(year, zero_based_month, payment_cycle),
+        "expectedPaymentDate": availability_date(year, zero_based_month, payment_cycle),
         "paymentStatus": "Pending",
         "rawStatus": "pending",
         "lastCheckedDate": dt.date.today().isoformat(),
@@ -242,40 +302,52 @@ def months_from_query(query):
 
 def normalize_invoice_item(item, month_name, zero_based_month, year):
     brand = item.get("brand") or {}
-    merchant_id = str(brand.get("id") or "").strip()
+    levanta_brand_id = str(brand.get("id") or "").strip()
     merchant_name = str(brand.get("name") or "").strip()
-    offer = OFFERS_BY_ID.get(merchant_id) or OFFERS_BY_BRAND.get(normalize(merchant_name)) or {}
-    expected = money(number(item.get("commission")) + number(item.get("cpcCommission")))
+    offer = OFFERS_BY_ID.get(levanta_brand_id) or OFFERS_BY_BRAND.get(normalize(merchant_name)) or {}
+    merchant_id = str(offer.get("merchantId") or levanta_brand_id).strip()
+    revenue_made = levanta_revenue_made(item)
+    commission_made = levanta_commission_made(item)
+    expected = commission_made
     raw = str(item.get("status") or "unknown")
     paid = expected if raw.lower() == "paid" else money(item.get("paidAmount"))
     remaining = max(0.0, money(expected - paid))
-    payment_cycle = offer.get("paymentCycle") or ""
+    payment_cycle = normalized_payment_cycle(offer.get("paymentCycle"), offer.get("network") or "Levanta")
     available = availability_date(year, zero_based_month, payment_cycle)
+    baseline_available = availability_date(year, zero_based_month, 60)
     month_key = f"{year}-{zero_based_month + 1:02d}"
-    status = payment_status(raw, expected, paid, available)
+    status = payment_status(raw, expected, paid, available, baseline_available)
     note_by_status = {
         "Paid": "Payment confirmed by Levanta API.",
-        "Pending": f"Payment is not due yet under the {'merchant payment cycle' if payment_cycle else '60-day availability rule'}.",
-        "Unpaid": "Payment is due and needs follow-up.",
+        "Pending": "Payment is still inside the 60-day network baseline.",
+        "Unpaid": f"Payment has passed the 60-day baseline but is not past the {payment_cycle}-day payment cycle.",
+        "Overdue": f"Payment is past the {payment_cycle}-day payment cycle and needs follow-up.",
         "Partial": "Partial payment found; remaining amount needs follow-up.",
     }
     return {
         "id": f"{merchant_id or normalize(merchant_name)}::{month_key}::{normalize(merchant_name)}",
         "merchantId": merchant_id,
+        "levantaBrandId": levanta_brand_id,
         "merchantName": merchant_name,
         "network": "Levanta",
         "tier": offer.get("tier") or "Unknown",
         "category": offer.get("category") or offer.get("levantaCategory") or "Uncategorized",
+        "categoryPath": offer.get("categoryPath"),
+        "mainCategory": offer.get("mainCategory"),
+        "subCategory": offer.get("subCategory"),
+        "mainCategoryCn": offer.get("mainCategoryCn"),
+        "subCategoryCn": offer.get("subCategoryCn"),
         "reportMonth": month_name,
         "reportYear": year,
         "reportMonthKey": month_key,
-        "revenueMade": money(item.get("sales")),
-        "commissionMade": expected,
+        "revenueMade": revenue_made,
+        "commissionMade": commission_made,
         "expectedPaymentAmount": expected,
         "paidAmount": paid,
         "remainingAmount": remaining,
         "paymentCycle": payment_cycle,
         "paymentAvailabilityDate": available,
+        "expectedPaymentDate": available,
         "paymentStatus": status,
         "rawStatus": raw,
         "lastCheckedDate": dt.date.today().isoformat(),
@@ -289,6 +361,7 @@ def payment_summary(records):
     unpaid = {record.get("merchantId") or record.get("merchantName") for record in records if record.get("paymentStatus") == "Unpaid"}
     pending = {record.get("merchantId") or record.get("merchantName") for record in records if record.get("paymentStatus") == "Pending"}
     paid = {record.get("merchantId") or record.get("merchantName") for record in records if record.get("paymentStatus") == "Paid"}
+    overdue = {record.get("merchantId") or record.get("merchantName") for record in records if record.get("paymentStatus") == "Overdue"}
     return {
         "recordCount": len(records),
         "merchantCount": len([mid for mid in merchant_ids if mid]),
@@ -298,9 +371,11 @@ def payment_summary(records):
         "totalRemainingAmount": money(sum(number(record.get("remainingAmount")) for record in records)),
         "totalUnpaidAmount": money(sum(number(record.get("remainingAmount")) for record in records if record.get("paymentStatus") == "Unpaid")),
         "totalPendingAmount": money(sum(number(record.get("remainingAmount")) for record in records if record.get("paymentStatus") == "Pending")),
+        "totalOverdueAmount": money(sum(number(record.get("remainingAmount")) for record in records if record.get("paymentStatus") == "Overdue")),
         "unpaidMerchantCount": len([mid for mid in unpaid if mid]),
         "pendingMerchantCount": len([mid for mid in pending if mid]),
         "paidMerchantCount": len([mid for mid in paid if mid]),
+        "overdueMerchantCount": len([mid for mid in overdue if mid]),
     }
 
 
@@ -347,7 +422,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(502, {"ok": False, "source": "levanta-api", "error": str(error)})
             return
 
-        records = with_pending_placeholders(records, months)
+        records = [record for record in with_pending_placeholders(records, months) if has_payable_payment_amount(record)]
 
         self.send_json(
             200,
