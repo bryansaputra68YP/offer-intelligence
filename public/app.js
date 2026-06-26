@@ -2,6 +2,7 @@
   const data = window.CHATBOT_DATA || { summary: {}, offers: [] };
   const sheetReport = window.SHEET_REPORT_DATA || { sheets: [], tierSheets: [] };
   const offers = data.offers || [];
+  const chatbotI18n = window.CHATBOT_I18N || {};
   offers.forEach((offer) => {
     offer.paymentCycle = normalizePaymentCycle(offer.paymentCycle, offer.network);
   });
@@ -328,6 +329,29 @@
     return t(`option.${value}`, value || "Unknown");
   }
 
+  function responseLanguageFor(prompt = state.currentQuery) {
+    if (chatbotI18n.responseLanguage) return chatbotI18n.responseLanguage(prompt, state.language);
+    return state.language === "zh" ? "zh" : "en";
+  }
+
+  function chatCopy(language) {
+    return chatbotI18n.copy ? chatbotI18n.copy(language) : {};
+  }
+
+  function chatFormat(template, values) {
+    if (chatbotI18n.format) return chatbotI18n.format(template, values);
+    return String(template || "").replace(/\{(\w+)\}/g, (_, key) => values[key] ?? "");
+  }
+
+  function chatLabelText(label, language) {
+    if (chatbotI18n.label) return chatbotI18n.label(label, language);
+    return language === "zh" ? label : labelText(label);
+  }
+
+  function promptHasPaymentTerms(text) {
+    return /payment|paid|unpaid|late|issue|cycle|付款|未付款|没付款|已付款|逾期|到期|周期|佣金|欠款|待处理|部分付款/.test(String(text || "").toLowerCase());
+  }
+
   function applyStaticLanguage() {
     document.documentElement.lang = state.language === "zh" ? "zh-Hans" : "en";
     document.querySelectorAll("[data-i18n]").forEach((el) => {
@@ -554,6 +578,8 @@
   }
 
   function monthNameFromText(value) {
+    const zhMonth = chatbotI18n.monthNameFromText && chatbotI18n.monthNameFromText(value);
+    if (zhMonth) return zhMonth;
     const text = String(value || "").toLowerCase();
     const direct = PAYMENT_MONTHS.find((month) => textIncludesAlias(text, month.toLowerCase()));
     if (direct) return direct;
@@ -970,22 +996,49 @@
     return "Optimization only";
   }
 
-  function recommendedAction(offer) {
+  function recommendedAction(offer, language = state.language) {
+    const group = tierGroup(offer);
+    if (language === "zh") {
+      if (hasPaymentRisk(offer)) return "放量前先跟进付款风险";
+      if (group === "Tier 1") return "战略性推进";
+      if (group === "Core Tier 2") {
+        const map = {
+          "Green active opportunity": "绿色主动机会",
+          "Yellow publisher expansion": "黄色 publisher 扩展机会",
+          "Optimization only": "仅优化"
+        };
+        return map[highlightStatus(offer)] || highlightStatus(offer);
+      }
+      if (group === "Tier 2 Watch") return "仅做精选 publisher 测试";
+      if (group === "Tier 3") return "控制节奏做发展测试";
+      if (group === "Tier 4") return "仅复测";
+      if (group === "Black Tier") return "不要推进";
+      return "仅优化";
+    }
     if (hasPaymentRisk(offer)) return "Follow up payment before scaling";
-    if (tierGroup(offer) === "Tier 1") return "Push strategically";
-    if (tierGroup(offer) === "Core Tier 2") return highlightStatus(offer);
-    if (tierGroup(offer) === "Tier 2 Watch") return "Selected publisher test only";
-    if (tierGroup(offer) === "Tier 3") return "Controlled development push";
-    if (tierGroup(offer) === "Tier 4") return "Retest only";
-    if (tierGroup(offer) === "Black Tier") return "Do not push";
+    if (group === "Tier 1") return "Push strategically";
+    if (group === "Core Tier 2") return highlightStatus(offer);
+    if (group === "Tier 2 Watch") return "Selected publisher test only";
+    if (group === "Tier 3") return "Controlled development push";
+    if (group === "Tier 4") return "Retest only";
+    if (group === "Black Tier") return "Do not push";
     return "Optimize only";
   }
 
-  function caution(offer) {
-    if (tierGroup(offer) === "Black Tier") return "Black tier; do not push.";
+  function caution(offer, language = state.language) {
+    const group = tierGroup(offer);
+    if (language === "zh") {
+      if (group === "Black Tier") return "Black Tier，不建议推进。";
+      if (hasPaymentRisk(offer)) return `付款风险：${paymentRiskTextForOffer(offer)}。`;
+      if (group === "Tier 4") return "仅在角度明确时复测。";
+      if (group === "Tier 2 Watch") return "放量前需要继续观察。";
+      if (number(offer.conversionRate) < 0.01) return "CVR 低于 1%，建议使用高意图流量。";
+      return "持续观察 EPC、CVR 和付款状态。";
+    }
+    if (group === "Black Tier") return "Black tier; do not push.";
     if (hasPaymentRisk(offer)) return `Payment risk: ${paymentRiskTextForOffer(offer)}.`;
-    if (tierGroup(offer) === "Tier 4") return "Retest only with a clear angle.";
-    if (tierGroup(offer) === "Tier 2 Watch") return "Needs monitoring before broader scale.";
+    if (group === "Tier 4") return "Retest only with a clear angle.";
+    if (group === "Tier 2 Watch") return "Needs monitoring before broader scale.";
     if (number(offer.conversionRate) < 0.01) return "CVR is below 1%; use high-intent traffic.";
     return "Monitor EPC, CVR, and payment status.";
   }
@@ -993,6 +1046,18 @@
   function bestAngle(offer, context = {}) {
     const category = displayCategory(offer) !== "Uncategorized" ? displayCategory(offer) : "category";
     const link = offer.recommendedLink ? `${offer.recommendedLink.toLowerCase()} traffic` : "selected publisher traffic";
+    const language = context.language || responseLanguageFor(context.prompt || state.currentQuery);
+    if (language === "zh") {
+      const categoryText = category === "category" ? "该品类" : category;
+      const linkText = offer.recommendedLink ? `${offer.recommendedLink} 流量` : "精选 publisher 流量";
+      if (context.google) {
+        if (number(offer.orders) >= 50 && number(offer.conversionRate) >= 0.01) return `${categoryText} 关键词、测评、对比和高意图搜索流量。`;
+        return `${categoryText} 关键词测试，先收紧意图；CVR 改善前不要大规模放量。`;
+      }
+      if (offer.hasDiscount) return `${categoryText} deal、coupon、对比和测评流量。`;
+      if (offer.hasAsin) return `${categoryText} ASIN 测评、对比和购买指南流量。`;
+      return `${categoryText} ${linkText}、对比内容和控制测试流量。`;
+    }
     if (context.google) {
       if (number(offer.orders) >= 50 && number(offer.conversionRate) >= 0.01) return `${category} keyword, review, comparison, and high-intent search traffic.`;
       return `${category} keyword tests with tighter intent; avoid broad scaling until CVR improves.`;
@@ -1599,6 +1664,8 @@
   }
 
   function categoryForPrompt(text) {
+    const zhCategory = chatbotI18n.categoryForPrompt && chatbotI18n.categoryForPrompt(text, uniqueValues("category"));
+    if (zhCategory) return zhCategory;
     const lower = text.toLowerCase();
     const categories = uniqueCategoryValues().filter((cat) => cat !== "Uncategorized");
     const phrase = cleanedCategoryPhrase(text);
@@ -1642,6 +1709,8 @@
   }
 
   function tierFromPrompt(text) {
+    const zhTier = chatbotI18n.tierFromPrompt && chatbotI18n.tierFromPrompt(text);
+    if (zhTier) return zhTier;
     const black = /black\s*tier|blocked|黑名单|黑色\s*tier|黑色分层|屏蔽|暂停/i.test(text);
     if (black) return "BLACK TIER";
     const match = text.match(/tier\s*([1-4一二三四])/i) ||
@@ -1670,6 +1739,8 @@
     const lower = userMessage.toLowerCase().trim();
     if (findByAsin(userMessage)) return "asin";
     if (findByMerchantId(userMessage)) return "merchant";
+    const zhIntent = chatbotI18n.detectIntent && chatbotI18n.detectIntent(userMessage);
+    if (zhIntent) return zhIntent;
     if (/payment|paid|unpaid|late|issue|cycle/.test(lower) || /付款|未付款|没付款|未支付|已付款|已支付|逾期|到期|待处理|支付|结算|款项|付款周期|支付周期|结算周期/.test(userMessage)) return "payment";
     if (/recommend|push|focus|best|should we/.test(lower) || /推荐|排行|排名|最好|最佳|主推|重点|应该|筛选|前\s*\d+/.test(userMessage) || wantsRecommendationList(userMessage)) return "recommendation";
     if (tierFromPrompt(userMessage)) return "tier";
@@ -1758,8 +1829,18 @@
   }
 
   function whyRecommended(offer, context = {}) {
+    const language = context.language || responseLanguageFor(context.prompt || state.currentQuery);
     if (offer.recommendation) return offer.recommendation;
     const signals = [];
+    if (language === "zh") {
+      if (tierGroup(offer) === "Tier 1") signals.push("优先 Tier 1 offer");
+      if (tierGroup(offer) === "Core Tier 2") signals.push("Tier 2 表现较强");
+      if (number(offer.orders) > 0) signals.push(`${number(offer.orders).toLocaleString()} 个订单`);
+      if (number(offer.conversionRate) >= 0.01) signals.push("CVR 健康");
+      if (number(offer.epc) > 0.25) signals.push("EPC 可用");
+      if (context.category && categoryMatches(offer, context.category)) signals.push("品类匹配");
+      return signals.length ? signals.join("，") : "当前筛选结果中综合评分最高";
+    }
     if (tierGroup(offer) === "Tier 1") signals.push("priority Tier 1 offer");
     if (tierGroup(offer) === "Core Tier 2") signals.push("strong Tier 2 performance");
     if (number(offer.orders) > 0) signals.push(`${number(offer.orders).toLocaleString()} orders`);
@@ -2040,7 +2121,8 @@
     return parts.length ? parts.join("; ") : "not available in current data";
   }
 
-  function fieldRows(offer) {
+  function fieldRows(offer, language = state.language) {
+    const notAvailable = language === "zh" ? chatCopy(language).notAvailable : "not available in current data";
     return [
       ["Merchant ID", textValue(offer.merchantId)],
       ["Merchant name", textValue(offer.brand)],
@@ -2059,25 +2141,25 @@
       ["Commission", money(offer.affCommission)],
       ["Commission rate", pct(offer.commissionRate)],
       ["Discount/deal info", textValue(offer.dealInfo || offer.discountInfo)],
-      ["Top ASINs", offer.topAsins && offer.topAsins.length ? offer.topAsins.slice(0, 8).join(", ") : "not available in current data"],
+      ["Top ASINs", offer.topAsins && offer.topAsins.length ? offer.topAsins.slice(0, 8).join(", ") : notAvailable],
       ["Payment status", textValue(offer.paymentStatus)],
-      ["Payment cycle", offer.paymentCycle ? `${offer.paymentCycle} days` : "not available in current data"],
+      ["Payment cycle", offer.paymentCycle ? `${offer.paymentCycle} days` : notAvailable],
       ["Link status", textValue(offer.linkStatus || offer.recommendedLink)],
-      ["Recommended action", recommendedAction(offer)],
+      ["Recommended action", recommendedAction(offer, language)],
       ["Notes / recommendation", textValue(offer.recommendation || offer.reason)]
     ];
   }
 
-  function merchantOverview(offer, extra = "") {
+  function merchantOverview(offer, extra = "", language = responseLanguageFor()) {
     setContext(buildMerchantContext(offer));
-    return merchantOverviewHtml(offer, extra);
+    return merchantOverviewHtml(offer, extra, language);
   }
 
-  function merchantOverviewHtml(offer, extra = "") {
-    const rows = fieldRows(offer)
-      .map(([label, value]) => `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</li>`)
+  function merchantOverviewHtml(offer, extra = "", language = responseLanguageFor()) {
+    const rows = fieldRows(offer, language)
+      .map(([label, value]) => `<li><strong>${escapeHtml(chatLabelText(label, language))}:</strong> ${escapeHtml(value)}</li>`)
       .join("");
-    return `<div class="merchant-card"><h4>${escapeHtml(offer.brand || "Merchant")} ${extra}</h4><ul>${rows}</ul></div>` +
+    return `<div class="merchant-card"><h4>${escapeHtml(offer.brand || chatCopy(language).merchantOverview || "Merchant")} ${extra}</h4><ul>${rows}</ul></div>` +
       downloadCardHtml([offer], {
         downloadType: "offers",
         filePrefix: "merchant_offer",
@@ -2089,10 +2171,10 @@
       });
   }
 
-  function resultTable(rows, columns) {
-    if (!rows.length) return `<p>${escapeHtml(t("context.noMatches", "No matching offers found."))}</p>`;
+  function resultTable(rows, columns, language = state.language) {
+    if (!rows.length) return `<p>${escapeHtml(language === "zh" ? chatCopy(language).noMatches : t("context.noMatches", "No matching offers found."))}</p>`;
     return `<div class="result-table-wrap"><table class="result-table">
-      <thead><tr>${columns.map((col) => `<th>${escapeHtml(labelText(col.label))}</th>`).join("")}</tr></thead>
+      <thead><tr>${columns.map((col) => `<th>${escapeHtml(chatLabelText(col.label, language))}</th>`).join("")}</tr></thead>
       <tbody>${rows.map((row) => `<tr>${columns.map((col) => `<td>${col.render(row)}</td>`).join("")}</tr>`).join("")}</tbody>
     </table></div>`;
   }
@@ -2132,6 +2214,43 @@
     { label: "Expected payment date", render: (o) => escapeHtml(o.expectedPaymentDate || o.paymentAvailabilityDate || "not available") },
     { label: "Notes", render: (o) => escapeHtml(o.notes || "not available") }
   ];
+
+  function chatStatusText(value, language) {
+    if (language !== "zh") return statusText(value);
+    const map = { Paid: "已付款", Unpaid: "未付款", Pending: "待处理", Partial: "部分付款", Unknown: "未知" };
+    return map[value] || value || "未知";
+  }
+
+  function chatMonthText(value, language) {
+    if (language !== "zh") return optionText(value);
+    const map = { March: "三月", April: "四月", May: "五月", June: "六月" };
+    return map[value] || value || "";
+  }
+
+  function chatPaymentNoteText(value, language) {
+    if (language !== "zh") return value || "not available";
+    const text = String(value || "");
+    if (/Payment is due and needs follow-up/i.test(text)) return "付款已到期，需要跟进。";
+    if (/Payment confirmed by Levanta/i.test(text)) return "Levanta 已确认付款。";
+    if (/Partial payment/i.test(text)) return "已记录部分付款，需要跟进剩余金额。";
+    if (/Payment is not due yet|Payment not due/i.test(text)) return "付款尚未到检查时间。";
+    return text || "当前数据不可用";
+  }
+
+  function paymentColumnsFor(language) {
+    if (language !== "zh") return paymentColumns;
+    return [
+      { label: "Merchant", render: (o) => `<strong>${escapeHtml(o.merchantName || "")}</strong><br><small>${escapeHtml(o.merchantId || "")}</small>` },
+      { label: "Tier", render: (o) => escapeHtml(o.tier || "Unknown") },
+      { label: "Month", render: (o) => escapeHtml(`${chatMonthText(o.reportMonth, language)} ${o.reportYear}`) },
+      { label: "Status", render: (o) => escapeHtml(chatStatusText(o.paymentStatus || "Unknown", language)) },
+      { label: "Revenue made", render: (o) => shortMoney(o.revenueMade) },
+      { label: "Commission made", render: (o) => shortMoney(o.commissionMade) },
+      { label: "Cycle", render: (o) => escapeHtml(o.paymentCycle ? `${o.paymentCycle} days` : "-") },
+      { label: "Available", render: (o) => escapeHtml(o.paymentAvailabilityDate || "not available") },
+      { label: "Notes", render: (o) => escapeHtml(chatPaymentNoteText(o.notes, language)) }
+    ];
+  }
 
   function paymentStatusRank(status) {
     const ranks = { Overdue: 1, Unpaid: 2, Partial: 3, Unknown: 4, Pending: 5, Paid: 6 };
@@ -2174,14 +2293,18 @@
   }
 
   function closestMatchesHtml(matches, query) {
+    const language = responseLanguageFor(query);
+    const copy = chatCopy(language);
     if (!matches.length) {
       setContext({ type: "default", items: getFiltered().slice(0, 80), summary: {}, filters: {} });
+      if (language === "zh") return `${escapeHtml(copy.notFoundPrefix)} <strong>${escapeHtml(query)}</strong>。${escapeHtml(copy.tryLookup)}`;
       return `I could not find <strong>${escapeHtml(query)}</strong>. Try merchant ID, ASIN, or category.`;
     }
     const rows = matches.map((item) => item.offer);
     state.lastRows = rows;
     setContext(buildCategoryContext("closest matches", rows));
-    return `I found multiple close merchant matches. Which one do you mean?` +
+    const message = language === "zh" ? escapeHtml(copy.closeMatches) : "I found multiple close merchant matches. Which one do you mean?";
+    return `${message}<br>` +
       downloadCardHtml(rows, {
         downloadType: "offers",
         filePrefix: "merchant_matches",
@@ -2191,11 +2314,15 @@
         title: "Closest matches file",
         description: `${rows.length.toLocaleString()} matching offers from this lookup.`
       }) +
-      resultTable(rows, compactColumns.slice(0, 5));
+      resultTable(rows, compactColumns.slice(0, 5), language);
   }
 
   function requestedRecommendationCount(prompt, fallback = 5) {
     const text = String(prompt || "");
+    if (chatbotI18n.requestedRecommendationCount) {
+      const requested = chatbotI18n.requestedRecommendationCount(text, fallback, MAX_RECOMMENDATION_EXPORT);
+      if (requested !== fallback) return requested;
+    }
     const patterns = [
       /\b(?:top|give|show|list|export|download|pull)\s+(?:me\s+)?(?:the\s+)?(?:top\s+)?(\d{1,4})\b/i,
       /\b(\d{1,4})\s+(?:offers?|brands?|recommendations?)\b/i,
@@ -2218,35 +2345,51 @@
   }
 
   function recommendationHtml(rows, context = {}) {
+    const language = responseLanguageFor(context.prompt || state.currentQuery);
+    const copy = chatCopy(language);
+    const localizedContext = { ...context, language };
     const requestedCount = number(context.requestedCount) || 5;
-    const ranked = rankedRecommendations(rows, context);
+    const ranked = rankedRecommendations(rows, localizedContext);
     const exportRows = ranked.slice(0, requestedCount);
     const top = exportRows.slice(0, 5);
-    setContext(buildRecommendationContext(exportRows, { ...context, requestedCount, exportCount: exportRows.length }));
-    if (!top.length) return "I found no offers that fit this recommendation request with the current filters.";
-    const label = context.category ? ` for ${escapeHtml(context.category)}` : context.tier ? ` from ${escapeHtml(context.tier)}` : "";
-    const downloadId = registerRecommendationDownload(exportRows, context, requestedCount);
-    const exportNote = exportRows.length < requestedCount
-      ? `I found ${exportRows.length.toLocaleString()} offers that fit.`
-      : `The Excel download includes all ${exportRows.length.toLocaleString()} requested offers.`;
+    setContext(buildRecommendationContext(exportRows, { ...localizedContext, requestedCount, exportCount: exportRows.length }));
+    if (!top.length) return language === "zh" ? copy.recommendationEmpty : "I found no offers that fit this recommendation request with the current filters.";
+    const label = language === "zh"
+      ? context.category ? `（${escapeHtml(context.category)}）` : context.tier ? `（${escapeHtml(context.tier)}）` : ""
+      : context.category ? ` for ${escapeHtml(context.category)}` : context.tier ? ` from ${escapeHtml(context.tier)}` : "";
+    const downloadId = registerRecommendationDownload(exportRows, localizedContext, requestedCount);
+    const exportNote = language === "zh"
+      ? exportRows.length < requestedCount
+        ? chatFormat(copy.exportPartial, { count: exportRows.length.toLocaleString() })
+        : chatFormat(copy.exportComplete, { count: exportRows.length.toLocaleString() })
+      : exportRows.length < requestedCount
+        ? `I found ${exportRows.length.toLocaleString()} offers that fit.`
+        : `The Excel download includes all ${exportRows.length.toLocaleString()} requested offers.`;
     const filterText = metricFilterText(context.metricFilters);
     const filterNote = filterText ? ` Filtered by ${filterText}.` : "";
-    return `<p><strong>Recommendation preview${label}:</strong> showing the top ${top.length.toLocaleString()} here so the chat stays readable. ${escapeHtml(exportNote)}</p>` +
+    const previewTitle = language === "zh" ? copy.recommendationPreview : "Recommendation preview";
+    const showingText = language === "zh"
+      ? chatFormat(copy.showingTop, { count: top.length.toLocaleString() })
+      : `showing the top ${top.length.toLocaleString()} here so the chat stays readable.`;
+    const rankingText = language === "zh"
+      ? `${exportRows.length.toLocaleString()} 个 offer，${copy.rankedBy}`
+      : `${exportRows.length.toLocaleString()} offers ranked by revenue, orders, CVR, AOV, then EPC.${filterNote}`;
+    return `<p><strong>${escapeHtml(previewTitle)}${label}:</strong> ${escapeHtml(showingText)} ${escapeHtml(exportNote)}</p>` +
       `<div class="download-card">
         <div>
-          <strong>Full recommendation file</strong>
-          <span>${exportRows.length.toLocaleString()} offers ranked by revenue, orders, CVR, AOV, then EPC.${escapeHtml(filterNote)}</span>
+          <strong>${escapeHtml(language === "zh" ? copy.fullRecommendationFile : "Full recommendation file")}</strong>
+          <span>${escapeHtml(rankingText)}</span>
         </div>
-        <button class="download-xlsx-button" type="button" data-download-id="${escapeHtml(downloadId)}">Download Excel</button>
+        <button class="download-xlsx-button" type="button" data-download-id="${escapeHtml(downloadId)}">${escapeHtml(language === "zh" ? copy.downloadExcel : "Download Excel")}</button>
       </div>` +
       top.map((offer, index) => `<div class="recommendation-answer">
         <strong>${index + 1}. ${escapeHtml(offer.brand || "")}</strong> - ${escapeHtml(tierGroup(offer))}
         <ul>
-          <li><strong>Merchant ID:</strong> ${escapeHtml(offer.merchantId || "not available")}</li>
-          <li><strong>Key metrics:</strong> AOV ${shortMoney(offer.aov)}, EPC ${shortEpc(offer.epc)}, commission ${shortPct(offer.commissionRate)}, clicks ${number(offer.clicks).toLocaleString()}, orders ${number(offer.orders).toLocaleString()}, CVR ${shortPct(offer.conversionRate)}, revenue ${shortMoney(offer.salesAmount)}</li>
-          <li><strong>Why recommended:</strong> ${escapeHtml(whyRecommended(offer, context))}</li>
-          <li><strong>Best traffic angle:</strong> ${escapeHtml(bestAngle(offer, context))}</li>
-          <li><strong>Caution / next step:</strong> ${escapeHtml(caution(offer))}</li>
+          <li><strong>${escapeHtml(language === "zh" ? copy.merchantId : "Merchant ID")}:</strong> ${escapeHtml(offer.merchantId || (language === "zh" ? copy.notAvailable : "not available"))}</li>
+          <li><strong>${escapeHtml(language === "zh" ? copy.keyMetrics : "Key metrics")}:</strong> AOV ${shortMoney(offer.aov)}, EPC ${shortEpc(offer.epc)}, commission ${shortPct(offer.commissionRate)}, clicks ${number(offer.clicks).toLocaleString()}, orders ${number(offer.orders).toLocaleString()}, CVR ${shortPct(offer.conversionRate)}, revenue ${shortMoney(offer.salesAmount)}</li>
+          <li><strong>${escapeHtml(language === "zh" ? copy.whyRecommended : "Why recommended")}:</strong> ${escapeHtml(whyRecommended(offer, localizedContext))}</li>
+          <li><strong>${escapeHtml(language === "zh" ? copy.bestTrafficAngle : "Best traffic angle")}:</strong> ${escapeHtml(bestAngle(offer, localizedContext))}</li>
+          <li><strong>${escapeHtml(language === "zh" ? copy.cautionNextStep : "Caution / next step")}:</strong> ${escapeHtml(caution(offer, language))}</li>
         </ul>
       </div>`).join("");
   }
@@ -2292,6 +2435,8 @@
 
   function paymentAnswer(prompt) {
     const lower = prompt.toLowerCase();
+    const language = responseLanguageFor(prompt);
+    const copy = chatCopy(language);
     const month = monthNameFromText(prompt);
     const tier = tierFromPrompt(prompt);
     const merchantMatches = findPaymentMerchantMatches(prompt);
@@ -2306,19 +2451,25 @@
       const s = updatePaymentSummary(rows);
       const cycle = rows.find((record) => record.paymentCycle);
       const title = `${merchant.brand}${month ? ` - ${month}` : ""}`;
-      const cycleText = cycle ? `${cycle.paymentCycle} days` : t("payment.notAvailable", "not available in current data");
+      const cycleText = cycle ? `${cycle.paymentCycle} days` : language === "zh" ? copy.notAvailable : t("payment.notAvailable", "not available in current data");
+      const download = downloadCardHtml(rows, {
+        downloadType: "payments",
+        filePrefix: "payment_records",
+        exportScope: title,
+        sheetName: "Payments",
+        downloadColumns: paymentExportColumns()
+      }, {
+        title: "Payment records file",
+        description: `${rows.length.toLocaleString()} payment records for this merchant/month lookup.`
+      });
+      if (language === "zh") {
+        return `<p><strong>${escapeHtml(title)}</strong> ${escapeHtml(copy.paymentSummary)}: ${s.recordCount.toLocaleString()} ${escapeHtml(copy.recordsAcross)} ${s.merchantCount.toLocaleString()} ${escapeHtml(copy.merchants)}；${escapeHtml(copy.unpaid)} ${s.unpaidMerchantCount.toLocaleString()}，${escapeHtml(copy.pending)} ${s.pendingMerchantCount.toLocaleString()}，${escapeHtml(copy.overdue)} ${s.overdueCount.toLocaleString()}。${escapeHtml(copy.paymentCycle)}：${escapeHtml(cycleText)}。</p>` +
+          download +
+          resultTable(rows, paymentColumnsFor(language), language);
+      }
       return `<p><strong>${escapeHtml(title)}</strong> ${escapeHtml(t("payment.summary", "payment summary"))}: ${s.recordCount.toLocaleString()} ${escapeHtml(t("payment.recordsAcross", "records across"))} ${s.merchantCount.toLocaleString()} ${escapeHtml(t("payment.merchants", "merchants"))}; ${escapeHtml(t("payment.unpaid", "unpaid"))} ${s.unpaidMerchantCount.toLocaleString()}, ${escapeHtml(t("payment.pendingCount", "pending"))} ${s.pendingMerchantCount.toLocaleString()}, ${escapeHtml(t("payment.overdue", "overdue"))} ${s.overdueCount.toLocaleString()}. ${escapeHtml(t("payment.cycle", "payment cycle"))}: ${escapeHtml(cycleText)}.</p>` +
-        downloadCardHtml(rows, {
-          downloadType: "payments",
-          filePrefix: "payment_records",
-          exportScope: title,
-          sheetName: "Payments",
-          downloadColumns: paymentExportColumns()
-        }, {
-          title: "Payment records file",
-          description: `${rows.length.toLocaleString()} payment records for this merchant/month lookup.`
-        }) +
-        resultTable(rows, paymentColumns);
+        download +
+        resultTable(rows, paymentColumnsFor(language), language);
     }
 
     if (month) rows = rows.filter((record) => record.reportMonth === month);
@@ -2333,59 +2484,83 @@
     setContext(buildPaymentContext(rows, prompt));
     const s = updatePaymentSummary(rows);
     const label = month ? `${month} payment records` : "Payment records";
+    const download = downloadCardHtml(rows, {
+      downloadType: "payments",
+      filePrefix: "payment_records",
+      exportScope: label,
+      sheetName: "Payments",
+      downloadColumns: paymentExportColumns()
+    }, {
+      title: "Payment records file",
+      description: `${rows.length.toLocaleString()} payment records matching this request.`
+    });
+    if (language === "zh") {
+      const title = month ? `${month} ${copy.paymentRecords}` : copy.paymentRecords;
+      return `<p><strong>${escapeHtml(title)}:</strong> ${s.recordCount.toLocaleString()} ${escapeHtml(copy.recordsAcross)} ${s.merchantCount.toLocaleString()} ${escapeHtml(copy.merchants)}；${escapeHtml(copy.unpaid)} ${s.unpaidMerchantCount.toLocaleString()}，${escapeHtml(copy.pending)} ${s.pendingMerchantCount.toLocaleString()}，${escapeHtml(copy.overdue)} ${s.overdueCount.toLocaleString()}。</p>` +
+        download +
+        resultTable(rows, paymentColumnsFor(language), language);
+    }
     return `<p><strong>${escapeHtml(state.language === "zh" ? `${optionText(month || "") || t("payments.records", "Payment records")}` : label)}:</strong> ${s.recordCount.toLocaleString()} ${escapeHtml(t("payment.recordsAcross", "records across"))} ${s.merchantCount.toLocaleString()} ${escapeHtml(t("payment.merchants", "merchants"))}; ${escapeHtml(t("payment.unpaid", "unpaid"))} ${s.unpaidMerchantCount.toLocaleString()}, ${escapeHtml(t("payment.pendingCount", "pending"))} ${s.pendingMerchantCount.toLocaleString()}, ${escapeHtml(t("payment.overdue", "overdue"))} ${s.overdueCount.toLocaleString()}.</p>` +
-      downloadCardHtml(rows, {
-        downloadType: "payments",
-        filePrefix: "payment_records",
-        exportScope: label,
-        sheetName: "Payments",
-        downloadColumns: paymentExportColumns()
-      }, {
-        title: "Payment records file",
-        description: `${rows.length.toLocaleString()} payment records matching this request.`
-      }) +
-      resultTable(rows, paymentColumns);
+      download +
+      resultTable(rows, paymentColumnsFor(language), language);
   }
 
   function asinAnswer(result) {
+    const language = responseLanguageFor();
+    const copy = chatCopy(language);
     setContext(buildASINContext(result));
-    if (!result.rows.length) return `ASIN <strong>${escapeHtml(result.asin)}</strong> was not found in the current data.`;
+    if (!result.rows.length) return language === "zh"
+      ? `ASIN <strong>${escapeHtml(result.asin)}</strong> ${escapeHtml(copy.asinNotFound)}`
+      : `ASIN <strong>${escapeHtml(result.asin)}</strong> was not found in the current data.`;
     const primary = result.rows[0];
-    return `ASIN <strong>${escapeHtml(result.asin)}</strong> belongs to:<br>${merchantOverviewHtml(primary, "(ASIN match)")}
+    if (language === "zh") {
+      return `ASIN <strong>${escapeHtml(result.asin)}</strong> ${escapeHtml(copy.asinBelongsTo)}<br>${merchantOverviewHtml(primary, "(ASIN match)", language)}
+        <p><strong>${escapeHtml(copy.productAsinInfo)}:</strong> ${escapeHtml(primary.asinsText || result.asin)}</p>
+        <p><strong>${escapeHtml(copy.recommendedTrafficAngle)}:</strong> ${escapeHtml(bestAngle(primary, { language }))}</p>`;
+    }
+    return `ASIN <strong>${escapeHtml(result.asin)}</strong> belongs to:<br>${merchantOverviewHtml(primary, "(ASIN match)", language)}
       <p><strong>Product/ASIN info:</strong> ${escapeHtml(primary.asinsText || result.asin)}</p>
-      <p><strong>Recommended traffic angle:</strong> ${escapeHtml(bestAngle(primary, {}))}</p>`;
+      <p><strong>Recommended traffic angle:</strong> ${escapeHtml(bestAngle(primary, { language }))}</p>`;
   }
 
   function answerPrompt(prompt) {
     state.currentQuery = prompt;
     const lower = prompt.toLowerCase().trim();
+    const language = responseLanguageFor(prompt);
+    const copy = chatCopy(language);
     const intent = detectQueryIntent(prompt);
     const asin = findByAsin(prompt);
     if (asin && intent === "asin") return asinAnswer(asin);
 
     const exact = findByMerchantId(prompt);
-    if (exact) return merchantOverview(exact);
+    if (exact) return merchantOverview(exact, "", language);
 
     const paymentCycleFilter = extractPaymentCycleFilter(prompt);
     if (paymentCycleFilter) return paymentCycleOfferAnswer(prompt, paymentCycleFilter);
 
     if (contextFollowup(lower)) {
-      if (/payment|paid|unpaid|cycle|late|due/.test(lower) || /付款|支付|未付款|已付款|周期|逾期|到期/.test(prompt)) {
+      if (promptHasPaymentTerms(lower) || /付款|支付|未付款|已付款|周期|逾期|到期/.test(prompt)) {
         return paymentAnswer(`${state.lastOffer.brand} ${prompt}`);
       }
       if (/epc/.test(lower)) {
         setContext(buildMerchantContext(state.lastOffer));
-        return `<strong>${escapeHtml(state.lastOffer.brand)}</strong> EPC is ${epc(state.lastOffer.epc)}.`;
+        return language === "zh"
+          ? `<strong>${escapeHtml(state.lastOffer.brand)}</strong> ${escapeHtml(copy.epcIs)} ${epc(state.lastOffer.epc)}。`
+          : `<strong>${escapeHtml(state.lastOffer.brand)}</strong> EPC is ${epc(state.lastOffer.epc)}.`;
       }
       if (/aov|客单价/.test(lower)) {
         setContext(buildMerchantContext(state.lastOffer));
-        return `<strong>${escapeHtml(state.lastOffer.brand)}</strong> AOV is ${money(state.lastOffer.aov)}.`;
+        return language === "zh"
+          ? `<strong>${escapeHtml(state.lastOffer.brand)}</strong> ${escapeHtml(copy.aovIs)} ${money(state.lastOffer.aov)}。`
+          : `<strong>${escapeHtml(state.lastOffer.brand)}</strong> AOV is ${money(state.lastOffer.aov)}.`;
       }
       if (/order|订单/.test(lower)) {
         setContext(buildMerchantContext(state.lastOffer));
-        return `<strong>${escapeHtml(state.lastOffer.brand)}</strong> order count is ${number(state.lastOffer.orders).toLocaleString()}.`;
+        return language === "zh"
+          ? `<strong>${escapeHtml(state.lastOffer.brand)}</strong> ${escapeHtml(copy.orderCountIs)} ${number(state.lastOffer.orders).toLocaleString()}。`
+          : `<strong>${escapeHtml(state.lastOffer.brand)}</strong> order count is ${number(state.lastOffer.orders).toLocaleString()}.`;
       }
-      return merchantOverview(state.lastOffer);
+      return merchantOverview(state.lastOffer, "", language);
     }
 
     const category = categoryForPrompt(prompt);
@@ -2415,7 +2590,8 @@
         .sort((a, b) => compareRecommendationOffers(a, b, { includeTier4: true, includeBlack: true }));
       setContext(buildTierContext(tier, rows));
       const topRows = topRecommendations(rows, { tier, includeTier4: true, includeBlack: true });
-      return `${escapeHtml(tier)} overview and top candidates:` +
+      const title = language === "zh" ? `${escapeHtml(tier)} ${escapeHtml(copy.tierOverview)}` : `${escapeHtml(tier)} overview and top candidates:`;
+      return title +
         downloadCardHtml(rows, {
           downloadType: "offers",
           filePrefix: "tier_offers",
@@ -2425,14 +2601,17 @@
           title: `${tier} file`,
           description: `${rows.length.toLocaleString()} ${tier} offers from the current offer data.`
         }) +
-        resultTable(topRows, compactColumns);
+        resultTable(topRows, compactColumns, language);
     }
 
     if (category) {
       const rows = sortedForCategory(category, { includeTier4: wantsTier4, includeBlack: wantsBlack, prompt });
       const previewRows = rows.slice(0, 25);
       setContext(buildCategoryContext(category, rows.slice(0, 80)));
-      return `Relevant <strong>${escapeHtml(category)}</strong> offers, sorted by tier priority and performance:` +
+      const title = language === "zh"
+        ? `<strong>${escapeHtml(category)}</strong> ${escapeHtml(copy.categoryOffers)}`
+        : `Relevant <strong>${escapeHtml(category)}</strong> offers, sorted by tier priority and performance:`;
+      return title +
         downloadCardHtml(rows, {
           downloadType: "offers",
           filePrefix: "category_offers",
@@ -2442,7 +2621,7 @@
           title: `${category} file`,
           description: `${rows.length.toLocaleString()} matching category offers.`
         }) +
-        resultTable(previewRows, compactColumns);
+        resultTable(previewRows, compactColumns, language);
     }
 
     if (/high epc|high aov|low conversion|low cvr|tracking issue|has asin|discount/.test(lower) || /高\s*epc|高\s*aov|低转化|低转换|跟踪问题|追踪问题|有\s*asin|折扣|优惠/.test(prompt)) {
@@ -2466,17 +2645,17 @@
         title: "Filtered offers file",
         description: `${rows.length.toLocaleString()} matching offers for this filter.`
       }) +
-      resultTable(previewRows, compactColumns);
+      resultTable(previewRows, compactColumns, language);
     }
 
-    if (lower.length < 3 || /^(help|hello|hi|what can you do)\??$/.test(lower)) {
+    if (lower.length < 3 || /^(help|hello|hi|what can you do)\??$/.test(lower) || /帮助|你好|能做什么/.test(prompt)) {
       setContext({ type: "default", items: getFiltered().slice(0, 80), summary: {}, filters: {} });
-      return "What do you want to look up: merchant name, merchant ID, ASIN, category, payment status, or recommendations?";
+      return language === "zh" ? copy.help : "What do you want to look up: merchant name, merchant ID, ASIN, category, payment status, or recommendations?";
     }
 
     const matches = findMerchantMatches(prompt);
     if (matches.length === 1 || (matches[0] && matches[0].adjusted >= 95 && (!matches[1] || matches[0].adjusted - matches[1].adjusted > 10))) {
-      return merchantOverview(matches[0].offer);
+      return merchantOverview(matches[0].offer, "", language);
     }
     return closestMatchesHtml(matches, prompt);
   }
@@ -2626,10 +2805,10 @@
       ["Payment Cycle", (offer) => offer.paymentCycle || ""],
       ["Recommended Link", (offer) => offer.recommendedLink || ""],
       ["Top ASINs", (offer) => Array.isArray(offer.topAsins) ? offer.topAsins.join(", ") : (offer.topAsins || offer.asinsText || "")],
-      ["Recommended Action", (offer) => recommendedAction(offer)],
+      ["Recommended Action", (offer, index, context) => recommendedAction(offer, context.language || state.language)],
       ["Why Recommended", (offer, index, context) => whyRecommended(offer, context)],
       ["Best Traffic Angle", (offer, index, context) => bestAngle(offer, context)],
-      ["Caution", (offer) => caution(offer)]
+      ["Caution", (offer, index, context) => caution(offer, context.language || state.language)]
     ];
   }
 
