@@ -3,6 +3,7 @@
   const sheetReport = window.SHEET_REPORT_DATA || { sheets: [], tierSheets: [] };
   const offers = data.offers || [];
   const chatbotI18n = window.CHATBOT_I18N || {};
+  const tier2Rules = window.TIER2_RECOMMENDATION_RULES || {};
   offers.forEach((offer) => {
     offer.paymentCycle = normalizePaymentCycle(offer.paymentCycle, offer.network);
   });
@@ -208,6 +209,9 @@
       "label.Orders": "订单",
       "label.Payment": "付款",
       "label.Highlight": "重点",
+      "label.Publisher Count": "Publisher 数量",
+      "label.Success Rate": "成功率",
+      "label.Tier 2 Optimization Idea": "Tier 2 优化建议",
       "label.Revenue": "收入",
       "label.Commission": "佣金",
       "label.Action": "动作",
@@ -996,11 +1000,64 @@
     return "Optimization only";
   }
 
+  function tier2PublisherStrategy(offer, language = state.language) {
+    if (!tier2Rules.strategyForOffer || offer.tier !== "Tier 2") return null;
+    return tier2Rules.strategyForOffer(offer, {
+      language,
+      tierGroup: tierGroup(offer),
+      highlightStatus: highlightStatus(offer)
+    });
+  }
+
+  function tier2PublisherCountText(offer, language = state.language) {
+    const strategy = tier2PublisherStrategy(offer, language);
+    if (!strategy) return "";
+    return strategy.publisherCountText || "";
+  }
+
+  function tier2PublisherSuccessText(offer, language = state.language) {
+    const strategy = tier2PublisherStrategy(offer, language);
+    if (!strategy) return "";
+    return strategy.successRateText || "";
+  }
+
+  function tier2OptimizationIdea(offer, language = state.language) {
+    const strategy = tier2PublisherStrategy(offer, language);
+    return strategy ? strategy.idea : "";
+  }
+
+  function tier2RecommendationDetailsHtml(offer, language) {
+    const strategy = tier2PublisherStrategy(offer, language);
+    if (!strategy) return "";
+    const copy = chatCopy(language);
+    const publisherLabel = language === "zh" ? chatLabelText("Publisher Count", language) : "Publisher count";
+    const successLabel = language === "zh" ? chatLabelText("Success Rate", language) : "Success rate";
+    const ideaLabel = language === "zh" ? (copy.tier2OptimizationIdea || chatLabelText("Tier 2 Optimization Idea", language)) : "Tier 2 optimization idea";
+    return [
+      `<li><strong>${escapeHtml(publisherLabel)}:</strong> ${escapeHtml(strategy.publisherCountText || (language === "zh" ? copy.notAvailable : "not available"))}</li>`,
+      `<li><strong>${escapeHtml(successLabel)}:</strong> ${escapeHtml(strategy.successRateText || (language === "zh" ? copy.notAvailable : "not available"))}</li>`,
+      `<li><strong>${escapeHtml(ideaLabel)}:</strong> ${escapeHtml(strategy.idea)}</li>`
+    ].join("");
+  }
+
+  function tier2FieldRows(offer, language = state.language) {
+    const strategy = tier2PublisherStrategy(offer, language);
+    if (!strategy) return [];
+    const notAvailable = language === "zh" ? chatCopy(language).notAvailable : "not available in current data";
+    return [
+      ["Publisher Count", strategy.publisherCountText || notAvailable],
+      ["Success Rate", strategy.successRateText || notAvailable],
+      ["Tier 2 Optimization Idea", strategy.idea]
+    ];
+  }
+
   function recommendedAction(offer, language = state.language) {
     const group = tierGroup(offer);
+    const publisherStrategy = tier2PublisherStrategy(offer, language);
     if (language === "zh") {
       if (hasPaymentRisk(offer)) return "放量前先跟进付款风险";
       if (group === "Tier 1") return "战略性推进";
+      if (publisherStrategy) return publisherStrategy.action;
       if (group === "Core Tier 2") {
         const map = {
           "Green active opportunity": "绿色主动机会",
@@ -1017,6 +1074,7 @@
     }
     if (hasPaymentRisk(offer)) return "Follow up payment before scaling";
     if (group === "Tier 1") return "Push strategically";
+    if (publisherStrategy) return publisherStrategy.action;
     if (group === "Core Tier 2") return highlightStatus(offer);
     if (group === "Tier 2 Watch") return "Selected publisher test only";
     if (group === "Tier 3") return "Controlled development push";
@@ -1027,9 +1085,11 @@
 
   function caution(offer, language = state.language) {
     const group = tierGroup(offer);
+    const publisherStrategy = tier2PublisherStrategy(offer, language);
     if (language === "zh") {
       if (group === "Black Tier") return "Black Tier，不建议推进。";
       if (hasPaymentRisk(offer)) return `付款风险：${paymentRiskTextForOffer(offer)}。`;
+      if (publisherStrategy) return publisherStrategy.caution;
       if (group === "Tier 4") return "仅在角度明确时复测。";
       if (group === "Tier 2 Watch") return "放量前需要继续观察。";
       if (number(offer.conversionRate) < 0.01) return "CVR 低于 1%，建议使用高意图流量。";
@@ -1037,6 +1097,7 @@
     }
     if (group === "Black Tier") return "Black tier; do not push.";
     if (hasPaymentRisk(offer)) return `Payment risk: ${paymentRiskTextForOffer(offer)}.`;
+    if (publisherStrategy) return publisherStrategy.caution;
     if (group === "Tier 4") return "Retest only with a clear angle.";
     if (group === "Tier 2 Watch") return "Needs monitoring before broader scale.";
     if (number(offer.conversionRate) < 0.01) return "CVR is below 1%; use high-intent traffic.";
@@ -1777,6 +1838,19 @@
     score -= offer.tier === "Tier 4" ? 40 : 0;
     score -= offer.tier === "BLACK TIER" ? 100 : 0;
 
+    const publisherStrategy = tier2PublisherStrategy(offer, "en");
+    if (publisherStrategy) {
+      const publisherScoreAdjustments = {
+        green_optimize: 7,
+        green_under_sample: 5,
+        under_sample: 3,
+        maintain_optimize: 2,
+        low_success_replace: -4,
+        red_recovery: -6
+      };
+      score += publisherScoreAdjustments[publisherStrategy.code] || 0;
+    }
+
     if (context.category && categoryMatches(offer, context.category)) score += 14;
     if (context.google) {
       score += number(offer.orders) >= 50 ? 8 : -4;
@@ -1830,11 +1904,19 @@
 
   function whyRecommended(offer, context = {}) {
     const language = context.language || responseLanguageFor(context.prompt || state.currentQuery);
-    if (offer.recommendation) return offer.recommendation;
+    const publisherStrategy = tier2PublisherStrategy(offer, language);
+    if (offer.recommendation) {
+      if (publisherStrategy) {
+        const prefix = language === "zh" ? "Publisher 策略" : "Publisher strategy";
+        return `${offer.recommendation} ${prefix}: ${publisherStrategy.idea}`;
+      }
+      return offer.recommendation;
+    }
     const signals = [];
     if (language === "zh") {
       if (tierGroup(offer) === "Tier 1") signals.push("优先 Tier 1 offer");
       if (tierGroup(offer) === "Core Tier 2") signals.push("Tier 2 表现较强");
+      if (publisherStrategy) signals.push(publisherStrategy.label);
       if (number(offer.orders) > 0) signals.push(`${number(offer.orders).toLocaleString()} 个订单`);
       if (number(offer.conversionRate) >= 0.01) signals.push("CVR 健康");
       if (number(offer.epc) > 0.25) signals.push("EPC 可用");
@@ -1843,6 +1925,7 @@
     }
     if (tierGroup(offer) === "Tier 1") signals.push("priority Tier 1 offer");
     if (tierGroup(offer) === "Core Tier 2") signals.push("strong Tier 2 performance");
+    if (publisherStrategy) signals.push(publisherStrategy.label);
     if (number(offer.orders) > 0) signals.push(`${number(offer.orders).toLocaleString()} orders`);
     if (number(offer.conversionRate) >= 0.01) signals.push("healthy CVR");
     if (number(offer.epc) > 0.25) signals.push("usable EPC");
@@ -1939,6 +2022,21 @@
     { label: "Action", render: (o) => escapeHtml(recommendedAction(o)) }
   ];
 
+  const tier2PublisherColumns = [
+    { label: "Publisher Count", render: (o) => escapeHtml(tier2PublisherCountText(o) || textValue(o.publisherCount)) },
+    { label: "Success Rate", render: (o) => escapeHtml(tier2PublisherSuccessText(o) || (o.successRate === undefined ? "not available" : shortPct(o.successRate))) },
+    { label: "Tier 2 Optimization Idea", render: (o) => escapeHtml(tier2OptimizationIdea(o) || "not applicable") }
+  ];
+
+  function contextColumnsFor(rows) {
+    if (!rows.some((offer) => offer.tier === "Tier 2")) return contextColumns;
+    return [
+      ...contextColumns.slice(0, 3),
+      ...tier2PublisherColumns,
+      ...contextColumns.slice(3)
+    ];
+  }
+
   function insightList(rows) {
     const bestEpc = bestBy(rows, "epc");
     const bestCvr = bestBy(rows, "conversionRate");
@@ -1979,6 +2077,7 @@
     ]) +
     scopeText +
     `<div class="context-note"><strong>Tier breakdown:</strong> ${escapeHtml(tierText)}${tier2Text ? `<br><strong>Tier 2 highlights:</strong> ${escapeHtml(tier2Text)}` : ""}</div>` +
+    miniTable(rows, contextColumnsFor(rows)) +
     insightList(rows);
   }
 
@@ -2074,7 +2173,7 @@
       ["Average CVR", shortPct(s.avgCvr)]
     ]) +
     `<div class="context-note"><strong>Best traffic angle:</strong> ${escapeHtml(top[0] ? bestAngle(top[0], { category: context.filters.category }) : "not available in current data")}</div>` +
-    miniTable(top, contextColumns.slice(0, 9)) +
+    miniTable(top, contextColumnsFor(top).slice(0, 9)) +
     insightList(top);
   }
 
@@ -2138,6 +2237,7 @@
       ["Order count", countValue(offer.orders)],
       ["Revenue", money(offer.salesAmount)],
       ["Conversion rate", pct(offer.conversionRate)],
+      ...tier2FieldRows(offer, language),
       ["Commission", money(offer.affCommission)],
       ["Commission rate", pct(offer.commissionRate)],
       ["Discount/deal info", textValue(offer.dealInfo || offer.discountInfo)],
@@ -2185,6 +2285,18 @@
     { label: "Category", render: (o) => escapeHtml(o.category || "Uncategorized") },
     { label: "EPC", render: (o) => shortEpc(o.epc) },
     { label: "AOV", render: (o) => shortMoney(o.aov) },
+    { label: "Orders", render: (o) => number(o.orders).toLocaleString() },
+    { label: "CVR", render: (o) => shortPct(o.conversionRate) },
+    { label: "Revenue", render: (o) => shortMoney(o.salesAmount) },
+    { label: "Payment", render: (o) => escapeHtml(o.paymentStatus || "not available") }
+  ];
+
+  const tier2CompactColumns = [
+    { label: "Merchant", render: (o) => `<strong>${escapeHtml(o.brand || "")}</strong><br><small>${escapeHtml(o.merchantId || "")}</small>` },
+    { label: "Highlight", render: (o) => escapeHtml(highlightStatus(o)) },
+    { label: "Publisher Count", render: (o) => escapeHtml(tier2PublisherCountText(o) || textValue(o.publisherCount)) },
+    { label: "Success Rate", render: (o) => escapeHtml(tier2PublisherSuccessText(o) || "not available") },
+    { label: "Tier 2 Optimization Idea", render: (o) => escapeHtml(tier2OptimizationIdea(o) || "not available") },
     { label: "Orders", render: (o) => number(o.orders).toLocaleString() },
     { label: "CVR", render: (o) => shortPct(o.conversionRate) },
     { label: "Revenue", render: (o) => shortMoney(o.salesAmount) },
@@ -2387,6 +2499,7 @@
         <ul>
           <li><strong>${escapeHtml(language === "zh" ? copy.merchantId : "Merchant ID")}:</strong> ${escapeHtml(offer.merchantId || (language === "zh" ? copy.notAvailable : "not available"))}</li>
           <li><strong>${escapeHtml(language === "zh" ? copy.keyMetrics : "Key metrics")}:</strong> AOV ${shortMoney(offer.aov)}, EPC ${shortEpc(offer.epc)}, commission ${shortPct(offer.commissionRate)}, clicks ${number(offer.clicks).toLocaleString()}, orders ${number(offer.orders).toLocaleString()}, CVR ${shortPct(offer.conversionRate)}, revenue ${shortMoney(offer.salesAmount)}</li>
+          ${tier2RecommendationDetailsHtml(offer, language)}
           <li><strong>${escapeHtml(language === "zh" ? copy.whyRecommended : "Why recommended")}:</strong> ${escapeHtml(whyRecommended(offer, localizedContext))}</li>
           <li><strong>${escapeHtml(language === "zh" ? copy.bestTrafficAngle : "Best traffic angle")}:</strong> ${escapeHtml(bestAngle(offer, localizedContext))}</li>
           <li><strong>${escapeHtml(language === "zh" ? copy.cautionNextStep : "Caution / next step")}:</strong> ${escapeHtml(caution(offer, language))}</li>
@@ -2590,6 +2703,7 @@
         .sort((a, b) => compareRecommendationOffers(a, b, { includeTier4: true, includeBlack: true }));
       setContext(buildTierContext(tier, rows));
       const topRows = topRecommendations(rows, { tier, includeTier4: true, includeBlack: true });
+      const columns = tier === "Tier 2" ? tier2CompactColumns : compactColumns;
       const title = language === "zh" ? `${escapeHtml(tier)} ${escapeHtml(copy.tierOverview)}` : `${escapeHtml(tier)} overview and top candidates:`;
       return title +
         downloadCardHtml(rows, {
@@ -2601,7 +2715,7 @@
           title: `${tier} file`,
           description: `${rows.length.toLocaleString()} ${tier} offers from the current offer data.`
         }) +
-        resultTable(topRows, compactColumns, language);
+        resultTable(topRows, columns, language);
     }
 
     if (category) {
@@ -2805,6 +2919,9 @@
       ["Payment Cycle", (offer) => offer.paymentCycle || ""],
       ["Recommended Link", (offer) => offer.recommendedLink || ""],
       ["Top ASINs", (offer) => Array.isArray(offer.topAsins) ? offer.topAsins.join(", ") : (offer.topAsins || offer.asinsText || "")],
+      ["Publisher Count", (offer) => tier2PublisherCountText(offer, "en") || offer.publisherCount || ""],
+      ["Publisher Success Rate", (offer) => tier2PublisherSuccessText(offer, "en") || ""],
+      ["Tier 2 Optimization Idea", (offer) => tier2OptimizationIdea(offer, "en") || ""],
       ["Recommended Action", (offer, index, context) => recommendedAction(offer, context.language || state.language)],
       ["Why Recommended", (offer, index, context) => whyRecommended(offer, context)],
       ["Best Traffic Angle", (offer, index, context) => bestAngle(offer, context)],

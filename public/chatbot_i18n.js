@@ -53,6 +53,7 @@
       whyRecommended: "推荐原因",
       bestTrafficAngle: "最佳流量角度",
       cautionNextStep: "注意事项 / 下一步",
+      tier2OptimizationIdea: "Tier 2 优化建议",
       paymentSummary: "付款概览",
       paymentRecords: "付款记录",
       recordsAcross: "条记录，覆盖",
@@ -116,6 +117,9 @@
     "Payment cycle": "付款周期",
     "Link status": "链接状态",
     "Recommended action": "建议动作",
+    "Publisher Count": "Publisher 数量",
+    "Success Rate": "成功率",
+    "Tier 2 Optimization Idea": "Tier 2 优化建议",
     "Notes / recommendation": "备注 / 推荐"
   };
 
