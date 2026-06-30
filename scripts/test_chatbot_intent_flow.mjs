@@ -15,6 +15,12 @@ function assertTruthy(value, label) {
   if (!value) throw new Error(`${label}: expected a truthy value, got ${JSON.stringify(value)}`);
 }
 
+function assertMatch(actual, pattern, label) {
+  if (!pattern.test(actual)) {
+    throw new Error(`${label}: expected ${JSON.stringify(actual)} to match ${pattern}`);
+  }
+}
+
 function assertApprox(actual, expected, label, tolerance = 1e-9) {
   if (Math.abs(actual - expected) > tolerance) {
     throw new Error(`${label}: expected ${expected}, got ${actual}`);
@@ -133,6 +139,26 @@ assertEqual(bundle.rows.length, 45, "bundle should return fewer rows when the ti
 assertEqual(bundle.gaps.length, 1, "bundle should report a shortage when candidates are insufficient");
 assertEqual(bundle.gaps[0].tier, "Tier 1", "shortage should identify the tier");
 assertEqual(bundle.gaps[0].gap, 55, "shortage should report the missing count");
+
+const zhPaymentCycleBelow = hooks.extractPaymentCycleFilter("付款周期在100天以下的offer");
+assertEqual(zhPaymentCycleBelow.operator, "<", "Chinese 以下 should be strict below");
+assertEqual(zhPaymentCycleBelow.threshold, 100, "Chinese payment cycle filter should parse threshold");
+assertEqual(hooks.paymentCycleFilterText(zhPaymentCycleBelow, "zh"), "付款周期少于100天", "Chinese payment cycle text should be localized");
+
+const zhPaymentCycleWithin = hooks.extractPaymentCycleFilter("付款周期100天以内的offer");
+assertEqual(zhPaymentCycleWithin.operator, "<=", "Chinese 以内 should be inclusive below");
+assertEqual(zhPaymentCycleWithin.threshold, 100, "Chinese inclusive payment cycle filter should parse threshold");
+
+const zhPaymentCycleNoMoreThan = hooks.extractPaymentCycleFilter("结算周期不超过100天的offer");
+assertEqual(zhPaymentCycleNoMoreThan.operator, "<=", "Chinese 不超过 should be inclusive below");
+
+const zhPaymentCycleAbove = hooks.extractPaymentCycleFilter("回款周期超过120天的offer");
+assertEqual(zhPaymentCycleAbove.operator, ">", "Chinese 超过 should be strict above");
+assertEqual(zhPaymentCycleAbove.threshold, 120, "Chinese above payment cycle filter should parse threshold");
+
+const zhPaymentCycleAnswer = hooks.answerPrompt("付款周期在100天以下的offer");
+assertMatch(zhPaymentCycleAnswer, /付款周期筛选预览/, "Chinese payment-cycle query should return a Chinese preview");
+assertMatch(zhPaymentCycleAnswer, /下载 Excel/, "Chinese payment-cycle query should offer Excel download");
 
 const aovAbove = hooks.extractMetricFilters("aov above 100")[0];
 assertEqual(aovAbove.field, "aov", "aov above filter should use AOV");

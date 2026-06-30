@@ -1627,22 +1627,22 @@
 
   function normalizeCycleComparisonOperator(operator) {
     const text = String(operator || "").toLowerCase();
-    if (/before|below|under|less|shorter|<|within|up to|at most|maximum|max|低于|少于|小于|短于|早于|以内|以下|不超过|最多|小于等于/.test(text)) {
-      return text.includes("=") || /within|up to|at most|maximum|max|以内|不超过|最多|小于等于|以下/.test(text) ? "<=" : "<";
+    if (/before|below|under|less|shorter|<|within|up to|at most|maximum|max|低于|少于|小于|短于|早于|以内|以下|不超过|最多|至多|小于等于|少于等于|低于等于/.test(text)) {
+      return text.includes("=") || /within|up to|at most|maximum|max|以内|不超过|最多|至多|小于等于|少于等于|低于等于/.test(text) ? "<=" : "<";
     }
-    return text.includes("=") || /at least|minimum|min|不低于|不少于|大于等于|至少|以上/.test(text) ? ">=" : ">";
+    return text.includes("=") || /at least|minimum|min|不低于|不少于|大于等于|至少/.test(text) ? ">=" : ">";
   }
 
   function paymentCycleFilterPattern() {
-    return new RegExp(`(?:payment\\s+)?cycle|付款周期|支付周期|结算周期|周期`, "i");
+    return new RegExp(`(?:payment|pay)\\s+cycle|付款周期|支付周期|结算周期|回款周期|周期`, "i");
   }
 
   function paymentCycleLeadingFilterPattern() {
-    return new RegExp(`((?:(?:payment\\s+)?cycle)|付款周期|支付周期|结算周期|周期)\\s*(?:is|are|with|of|为|是|在|有|:|：)?\\s*(before|below|under|less\\s+than|shorter\\s+than|within|up\\s+to|at\\s+most|maximum|max|<=|<|above|over|greater\\s+than|more\\s+than|at\\s+least|minimum|min|>=|>|低于|少于|小于|短于|早于|以内|以下|不超过|最多|小于等于|高于|超过|大于|至少|以上|不低于|不少于|大于等于)\\s*(${numberTokenPattern()})\\s*(?:days?|d|天|日)?`, "i");
+    return new RegExp(`((?:(?:payment|pay)\\s+cycle)|付款周期|支付周期|结算周期|回款周期|周期)\\s*(?:is|are|with|of|为|是|在|有|:|：)?\\s*(before|below|under|less\\s+than|shorter\\s+than|within|up\\s+to|at\\s+most|maximum|max|<=|<|above|over|greater\\s+than|more\\s+than|at\\s+least|minimum|min|>=|>|低于|少于|小于|短于|早于|以内|以下|不超过|最多|至多|小于等于|少于等于|低于等于|高于|超过|大于|至少|以上|不低于|不少于|大于等于)\\s*(${numberTokenPattern()})\\s*(?:days?|d|天|日)?`, "i");
   }
 
   function paymentCycleTrailingFilterPattern() {
-    return new RegExp(`((?:(?:payment\\s+)?cycle)|付款周期|支付周期|结算周期|周期)\\s*(?:is|are|with|of|为|是|在|有|:|：)?\\s*(${numberTokenPattern()})\\s*(?:days?|d|天|日)?\\s*(before|below|under|less\\s+than|shorter\\s+than|within|up\\s+to|at\\s+most|maximum|max|<=|<|above|over|greater\\s+than|more\\s+than|at\\s+least|minimum|min|>=|>|低于|少于|小于|短于|早于|以内|以下|不超过|最多|小于等于|高于|超过|大于|至少|以上|不低于|不少于|大于等于)`, "i");
+    return new RegExp(`((?:(?:payment|pay)\\s+cycle)|付款周期|支付周期|结算周期|回款周期|周期)\\s*(?:is|are|with|of|为|是|在|有|:|：)?\\s*(${numberTokenPattern()})\\s*(?:days?|d|天|日)?\\s*(before|below|under|less\\s+than|shorter\\s+than|within|up\\s+to|at\\s+most|maximum|max|<=|<|above|over|greater\\s+than|more\\s+than|at\\s+least|minimum|min|>=|>|低于|少于|小于|短于|早于|以内|以下|不超过|最多|至多|小于等于|少于等于|低于等于|高于|超过|大于|至少|以上|不低于|不少于|大于等于)`, "i");
   }
 
   function extractPaymentCycleFilter(prompt) {
@@ -1671,8 +1671,17 @@
     return true;
   }
 
-  function paymentCycleFilterText(filter) {
+  function paymentCycleFilterText(filter, language = "en") {
     if (!filter) return "";
+    if (language === "zh") {
+      const operatorText = {
+        "<": "少于",
+        "<=": "不超过",
+        ">": "超过",
+        ">=": "至少"
+      }[filter.operator] || filter.operator;
+      return `付款周期${operatorText}${Number(filter.threshold).toLocaleString()}天`;
+    }
     return `Payment cycle ${filter.operator} ${Number(filter.threshold).toLocaleString()} days`;
   }
 
@@ -3004,13 +3013,14 @@
   }
 
   function paymentCycleOfferAnswer(prompt, filter) {
+    const language = responseLanguageFor(prompt);
     const rows = offers
       .filter((offer) => paymentCycleFilterMatches(offer, filter))
       .sort((a, b) => number(a.paymentCycle) - number(b.paymentCycle) || tierPriority(a, true, true) - tierPriority(b, true, true) || number(b.orders) - number(a.orders));
     const requestedCount = requestedRecommendationCount(prompt, Math.min(rows.length, MAX_RECOMMENDATION_EXPORT));
     const exportRows = rows.slice(0, Math.min(requestedCount, MAX_RECOMMENDATION_EXPORT));
     const top = exportRows.slice(0, 5);
-    const filterText = paymentCycleFilterText(filter);
+    const filterText = paymentCycleFilterText(filter, language);
     const scopeOperator = { "<": "below", "<=": "up-to", ">": "above", ">=": "at-least" }[filter.operator] || "cycle";
     const scope = `payment-cycle-${scopeOperator}-${filter.threshold}-days`;
     setContext(buildRecommendationContext(exportRows, {
@@ -3021,7 +3031,11 @@
       includeTier4: true,
       includeBlack: true
     }));
-    if (!top.length) return `I found no offers with ${escapeHtml(filterText)}.`;
+    if (!top.length) {
+      return language === "zh"
+        ? `没有找到${escapeHtml(filterText)}的 offer。可以尝试放宽条件，比如 120天以下。`
+        : `I found no offers with ${escapeHtml(filterText)}.`;
+    }
     const downloadId = registerRecommendationDownload(exportRows, {
       exportScope: scope,
       paymentCycleFilter: filter,
@@ -3031,6 +3045,20 @@
     const foundText = exportRows.length < rows.length
       ? `showing ${exportRows.length.toLocaleString()} of ${rows.length.toLocaleString()} matching offers`
       : `${exportRows.length.toLocaleString()} matching offers`;
+    if (language === "zh") {
+      const zhFoundText = exportRows.length < rows.length
+        ? `导出 ${exportRows.length.toLocaleString()} 个，共 ${rows.length.toLocaleString()} 个匹配 offer`
+        : `找到 ${exportRows.length.toLocaleString()} 个匹配 offer`;
+      return `<p><strong>付款周期筛选预览：</strong>${escapeHtml(filterText)}，按付款周期从短到长排序；${escapeHtml(zhFoundText)}。聊天中先预览前 ${top.length.toLocaleString()} 个。</p>` +
+        `<div class="download-card">
+          <div>
+            <strong>付款周期 offer 文件</strong>
+            <span>${exportRows.length.toLocaleString()} 个 offer，单一 Excel 总表，按付款周期从短到长排序。</span>
+          </div>
+          <button class="download-xlsx-button" type="button" data-download-id="${escapeHtml(downloadId)}">下载 Excel</button>
+        </div>` +
+        resultTable(top, paymentCycleOfferColumns, language);
+    }
     return `<p><strong>Payment cycle preview:</strong> ${escapeHtml(filterText)}, sorted shortest first; ${escapeHtml(foundText)}. Showing the top ${top.length.toLocaleString()} here so the chat stays readable.</p>` +
       `<div class="download-card">
         <div>
@@ -3039,7 +3067,7 @@
         </div>
         <button class="download-xlsx-button" type="button" data-download-id="${escapeHtml(downloadId)}">Download Excel</button>
       </div>` +
-      resultTable(top, paymentCycleOfferColumns);
+      resultTable(top, paymentCycleOfferColumns, language);
   }
 
   function paymentAnswer(prompt) {
@@ -4327,6 +4355,8 @@
       hasStrongMerchantLookup,
       extractMetricFilters,
       extractMetricSortIntent,
+      extractPaymentCycleFilter,
+      paymentCycleFilterText,
       requestedRecommendationCount,
       parseTierOfferRequest,
       answerPrompt,
