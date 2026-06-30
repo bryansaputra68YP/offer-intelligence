@@ -531,8 +531,29 @@
     return haystack.includes(term);
   }
 
+  function cleanCategoryValue(value) {
+    const text = String(value || "").trim();
+    return text && text !== "Uncategorized" ? text : "";
+  }
+
+  function sheetMainCategory(item) {
+    if (!item) return "Uncategorized";
+    const sheetCategory = cleanCategoryValue(item.sheetCategory);
+    if (sheetCategory) return sheetCategory;
+    const category = cleanCategoryValue(item.category);
+    if (category && item.categorySource !== "Feishu") return category;
+    const mainCategory = cleanCategoryValue(item.mainCategory);
+    if (mainCategory) return mainCategory;
+    if (category) return category;
+    return cleanCategoryValue(item.levantaCategory) || "Uncategorized";
+  }
+
   function categoryParts(item) {
     return [
+      sheetMainCategory(item),
+      item && item.sheetCategory,
+      item && item.feishuMainCategory,
+      item && item.feishuSubCategory,
       item && item.mainCategory,
       item && item.subCategory,
       item && item.mainCategoryCn,
@@ -544,26 +565,29 @@
   }
 
   function displayCategory(item) {
-    if (!item) return "Uncategorized";
-    if (item.categoryPath) return item.categoryPath;
-    const main = String(item.mainCategory || "").trim();
-    const sub = String(item.subCategory || "").trim();
-    if (main && sub && main !== sub) return `${main} > ${sub}`;
-    if (sub) return sub;
-    if (main) return main;
-    return item.category || item.levantaCategory || "Uncategorized";
+    return sheetMainCategory(item);
   }
 
   function categorySearchText(item) {
     return categoryParts(item).concat(item && item.brand, item && item.merchantName).filter(Boolean).join(" ").toLowerCase();
   }
 
+  let mainCategoryNormsCache = null;
+
   function uniqueCategoryValues() {
     const values = new Set();
     offers.forEach((offer) => {
-      categoryParts(offer).forEach((value) => values.add(String(value).trim()));
+      const category = sheetMainCategory(offer);
+      if (category !== "Uncategorized") values.add(category);
     });
     return Array.from(values).sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
+  }
+
+  function hasMainCategoryValue(category) {
+    if (!mainCategoryNormsCache) {
+      mainCategoryNormsCache = new Set(uniqueCategoryValues().map((value) => normalize(value)));
+    }
+    return mainCategoryNormsCache.has(normalize(category));
   }
 
   function dateOnly(value) {
@@ -1758,6 +1782,9 @@
   function categoryMatches(offer, category) {
     if (!category) return true;
     const aliases = categoryAliases[category] || [category];
+    const mainCategory = sheetMainCategory(offer).toLowerCase();
+    if (aliases.some((alias) => textIncludesAlias(mainCategory, alias))) return true;
+    if (hasMainCategoryValue(category)) return false;
     const haystack = categorySearchText(offer);
     if (aliases.some((alias) => textIncludesAlias(haystack, alias))) return true;
     const queryTokens = meaningfulTokens(category);

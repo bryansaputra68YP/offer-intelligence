@@ -49,6 +49,17 @@ def clean_text(value)
   text.empty? ? nil : text
 end
 
+def category_from_sheet_row(row)
+  category_indexes = row.headers.each_index.select do |index|
+    row.headers[index].to_s.strip.casecmp("Category").zero?
+  end
+  category_indexes.reverse_each do |index|
+    category = clean_text(row.fields[index])
+    return category if category
+  end
+  nil
+end
+
 MONTH_NUMBERS = {
   "January" => 1,
   "February" => 2,
@@ -242,14 +253,14 @@ if File.exist?(feishu_category_csv)
 end
 
 sheet_blocks_by_tier_row = {}
-block_start_rows = { "Tier 1" => 10, "Tier 2" => 13, "Tier 3" => 10 }
+block_start_rows = { "Tier 1" => 10, "Tier 2" => 13, "Tier 3" => 10, "Tier 4" => 10 }
 block_start_rows.each do |tier, header_row|
   file = File.join(sheet_block_dir, "#{tier.downcase.gsub(/\s+/, "_")}_sheet_block.tsv")
   next unless File.exist?(file)
 
   CSV.read(file, headers: true, col_sep: "\t").each_with_index do |row, index|
     row_number = header_row + 1 + index
-    sheet_blocks_by_tier_row[[tier, row_number]] = row.to_h
+    sheet_blocks_by_tier_row[[tier, row_number]] = row.to_h.merge("Sheet Category" => category_from_sheet_row(row))
   end
 end
 
@@ -263,10 +274,14 @@ offers = CSV.read(brand_csv, headers: true).map do |row|
   sheet_block = sheet_blocks_by_tier_row[[row["tier"], row["row_number"].to_i]] || {}
 
   network = backend && backend["backend_network"].to_s.strip != "" ? backend["backend_network"] : row["network_or_agency"]
-  category_path = feishu_cat ? [feishu_cat["mainCategory"], feishu_cat["subCategory"]].compact.reject(&:empty?).join(" > ") : nil
-  feishu_category = feishu_cat && (clean_text(feishu_cat["subCategory"]) || clean_text(feishu_cat["mainCategory"]))
-  category = feishu_category || lev_cat&.fetch("topCategory", nil) || clean_text(sheet_block["Category"]) || row["category"].to_s.strip
+  sheet_category = clean_text(sheet_block["Sheet Category"]) || clean_text(sheet_block["Category"]) || clean_text(row["category"])
+  feishu_main_category = feishu_cat&.fetch("mainCategory", nil)
+  feishu_sub_category = feishu_cat&.fetch("subCategory", nil)
+  category = sheet_category || feishu_main_category || lev_cat&.fetch("topCategory", nil) || feishu_sub_category
   category = "Uncategorized" if category.empty?
+  main_category = category == "Uncategorized" ? nil : category
+  category_path = [main_category, feishu_sub_category].compact.reject(&:empty?).uniq.join(" > ")
+  category_path = nil if category_path.empty?
 
   clicks = num(backend && backend["backend_clicks"]) || num(row["clicks"])
   orders = num(backend && backend["backend_order_count"]) || num(row["orders"])
@@ -317,16 +332,19 @@ offers = CSV.read(brand_csv, headers: true).map do |row|
     "brand" => row["brand"],
     "network" => network.to_s.strip.empty? ? "Unknown" : network,
     "category" => category,
+    "sheetCategory" => sheet_category,
     "categoryPath" => category_path,
-    "mainCategory" => feishu_cat&.fetch("mainCategory", nil),
-    "subCategory" => feishu_cat&.fetch("subCategory", nil),
+    "mainCategory" => main_category,
+    "subCategory" => feishu_sub_category,
+    "feishuMainCategory" => feishu_main_category,
+    "feishuSubCategory" => feishu_sub_category,
     "mainCategoryCn" => feishu_cat&.fetch("mainCategoryCn", nil),
     "subCategoryCn" => feishu_cat&.fetch("subCategoryCn", nil),
     "mainCategoryBsr" => feishu_cat&.fetch("mainCategoryBsr", nil),
     "subcategoryBsr" => feishu_cat&.fetch("subcategoryBsr", nil),
     "feishuCategoryMerchantName" => feishu_cat&.fetch("merchantName", nil),
     "feishuCategoryAsin" => feishu_cat&.fetch("asin", nil),
-    "categorySource" => feishu_cat ? "Feishu" : (lev_cat ? "Levanta" : "Sheet"),
+    "categorySource" => sheet_category ? "Google Sheet" : (feishu_cat ? "Feishu" : (lev_cat ? "Levanta" : "Source")),
     "levantaCategory" => lev_cat&.fetch("topCategory", nil),
     "allLevantaCategories" => lev_cat&.fetch("categories", nil),
     "clicks" => round(clicks, 0),
@@ -471,8 +489,9 @@ summary = {
   "notPaidCount" => offers.count { |offer| offer["paymentRisk"] },
   "notPaidMonths" => offers.flat_map { |offer| offer["paymentRiskMonths"] }.compact.uniq,
   "backendMatchedCount" => offers.count { |offer| backend_by_mid.key?(offer["merchantId"]) },
+  "sheetCategorizedCount" => offers.count { |offer| offer["sheetCategory"] },
   "levantaCategorizedCount" => offers.count { |offer| offer["levantaCategory"] },
-  "feishuCategorizedCount" => offers.count { |offer| offer["mainCategory"] || offer["subCategory"] },
+  "feishuCategorizedCount" => offers.count { |offer| offer["feishuMainCategory"] || offer["feishuSubCategory"] },
   "paymentSummary" => payment_summary
 }
 
