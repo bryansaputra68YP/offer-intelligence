@@ -727,20 +727,26 @@
     const expected = number(record.expectedPaymentAmount ?? commissionMade);
     const paid = number(record.paidAmount);
     const remaining = Math.max(0, number(record.remainingAmount ?? (expected - paid)));
+    const sourceMerchantId = String(record.merchantId || "").trim();
     const matchedOffer = offerForPaymentMerchant(record) || {};
     const network = record.network || matchedOffer.network || "Levanta";
+    const matchedMerchantId = String(matchedOffer.merchantId || "").trim();
+    const useMatchedLevantaId = normalize(network) === "levanta" && matchedMerchantId;
+    const merchantId = useMatchedLevantaId ? matchedMerchantId : sourceMerchantId;
+    const levantaBrandId = record.levantaBrandId || (useMatchedLevantaId && sourceMerchantId !== merchantId ? sourceMerchantId : "");
     const normalized = {
       ...record,
-      merchantId: String(record.merchantId || "").trim(),
+      merchantId,
+      levantaBrandId,
       merchantName: String(record.merchantName || record.brand || "").trim(),
       network,
-      tier: record.tier || "Unknown",
-      category: record.category || matchedOffer.category || matchedOffer.levantaCategory || "Uncategorized",
-      categoryPath: record.categoryPath || matchedOffer.categoryPath || "",
-      mainCategory: record.mainCategory || matchedOffer.mainCategory || "",
-      subCategory: record.subCategory || matchedOffer.subCategory || "",
-      mainCategoryCn: record.mainCategoryCn || matchedOffer.mainCategoryCn || "",
-      subCategoryCn: record.subCategoryCn || matchedOffer.subCategoryCn || "",
+      tier: paymentMetadataValue(record.tier, matchedOffer.tier, "Unknown"),
+      category: paymentMetadataValue(record.category, matchedOffer.category || matchedOffer.levantaCategory, "Uncategorized"),
+      categoryPath: paymentMetadataValue(record.categoryPath, matchedOffer.categoryPath, ""),
+      mainCategory: paymentMetadataValue(record.mainCategory, matchedOffer.mainCategory, ""),
+      subCategory: paymentMetadataValue(record.subCategory, matchedOffer.subCategory, ""),
+      mainCategoryCn: paymentMetadataValue(record.mainCategoryCn, matchedOffer.mainCategoryCn, ""),
+      subCategoryCn: paymentMetadataValue(record.subCategoryCn, matchedOffer.subCategoryCn, ""),
       reportMonth: record.reportMonth || monthNameFromText(record.reportMonthKey) || "Unknown",
       reportYear: Number(record.reportYear || 2026),
       reportMonthKey: record.reportMonthKey || monthKey(record),
@@ -759,18 +765,36 @@
     return normalized;
   }
 
+  function paymentMetadataValue(recordValue, matchedValue, fallback) {
+    const text = String(recordValue || "").trim();
+    const generic = ["unknown", "uncategorized"].includes(normalize(text));
+    if (text && !generic) return recordValue;
+    return matchedValue || recordValue || fallback;
+  }
+
   function offerForPaymentMerchant(record) {
     const merchantId = String(record.merchantId || "").trim();
     if (merchantId) {
       const byId = offers.find((offer) => String(offer.merchantId || "").trim() === merchantId);
-      if (byId) return byId;
+      if (byId && (normalize(record.network) !== "levanta" || normalize(byId.network) === "levanta")) return byId;
     }
     const merchantName = normalize(record.merchantName || record.brand);
     if (!merchantName) return null;
-    return offers.find((offer) => {
+    const exactMatches = offers.filter((offer) => normalize(offer.brand) === merchantName);
+    if (normalize(record.network) === "levanta") {
+      const levantaMatch = exactMatches.find((offer) => normalize(offer.network) === "levanta");
+      if (levantaMatch) return levantaMatch;
+    }
+    if (exactMatches.length) return exactMatches[0];
+    const fuzzyMatches = offers.filter((offer) => {
       const brand = normalize(offer.brand);
       return brand && (brand === merchantName || brand.includes(merchantName) || merchantName.includes(brand));
     });
+    if (normalize(record.network) === "levanta") {
+      const levantaFuzzyMatch = fuzzyMatches.find((offer) => normalize(offer.network) === "levanta");
+      if (levantaFuzzyMatch) return levantaFuzzyMatch;
+    }
+    return fuzzyMatches[0] || null;
   }
 
   function paymentMerchantKey(record) {
@@ -996,7 +1020,7 @@
     if (byId.length) return byId;
     const brandKey = normalize(offer.brand);
     if (!brandKey) return [];
-    return paymentRecords.filter((record) => normalize(record.merchantName) === brandKey);
+    return paymentRecords.filter((record) => !String(record.merchantId || "").trim() && normalize(record.merchantName) === brandKey);
   }
 
   function hasOfferOverduePayment(offer) {

@@ -94,6 +94,10 @@ def normalized_payment_cycle(payment_cycle, network)
   cycle.positive? ? cycle.round : 60
 end
 
+def levanta_network?(network)
+  network.to_s.strip.downcase == "levanta"
+end
+
 def payment_month_key(year, month_name)
   month_number = MONTH_NUMBERS[month_name.to_s]
   return nil unless year && month_number
@@ -144,6 +148,15 @@ def compact_hash(hash)
     next if key == "originalRank"
     compacted[key] = value
   end
+end
+
+def payment_offer_for_brand(offers_by_brand, brand_name)
+  candidates = offers_by_brand[normalize_brand(brand_name)].to_a
+  return nil if candidates.empty?
+
+  levanta_candidates = candidates.select { |offer| levanta_network?(offer["network"]) }
+  candidates = levanta_candidates unless levanta_candidates.empty?
+  candidates.min_by { |offer| [tier_rank(offer["tier"]), -num(offer["salesAmount"]).to_f] }
 end
 
 backend_by_mid = {}
@@ -276,13 +289,13 @@ end
 offers = CSV.read(brand_csv, headers: true).map do |row|
   mid = merchant_key(row["merchant_id"])
   backend = backend_by_mid[mid]
-  paid = not_paid_by_brand[normalize_brand(row["brand"])]
-  invoice_status = invoice_status_by_brand[normalize_brand(row["brand"])]
   lev_cat = levanta_category_by_brand[normalize_brand(row["brand"])]
   feishu_cat = feishu_category_by_mid[mid] || feishu_category_by_brand[normalize_brand(row["brand"])]
   sheet_block = sheet_blocks_by_tier_row[[row["tier"], row["row_number"].to_i]] || {}
 
   network = backend && backend["backend_network"].to_s.strip != "" ? backend["backend_network"] : row["network_or_agency"]
+  paid = levanta_network?(network) ? not_paid_by_brand[normalize_brand(row["brand"])] : nil
+  invoice_status = levanta_network?(network) ? invoice_status_by_brand[normalize_brand(row["brand"])] : nil
   sheet_category = clean_text(sheet_block["Sheet Category"]) || clean_text(sheet_block["Category"]) || clean_text(row["category"])
   feishu_main_category = feishu_cat&.fetch("mainCategory", nil)
   feishu_sub_category = feishu_cat&.fetch("subCategory", nil)
@@ -410,9 +423,11 @@ end.map { |offer| compact_hash(offer) }
 offers_by_brand = offers.group_by { |offer| normalize_brand(offer["brand"]) }
 payment_records = invoice_rows.map do |row|
   brand_name = row["brand"].is_a?(Hash) ? row["brand"]["name"] : row["brand"]
-  matched_offer = offers_by_brand[normalize_brand(brand_name)].to_a.min_by { |offer| [tier_rank(offer["tier"]), -num(offer["salesAmount"]).to_f] }
+  matched_offer = payment_offer_for_brand(offers_by_brand, brand_name)
   report_month = row["invoice_month"] || row["month"]
   report_year = row["invoice_year"] || 2026
+  levanta_brand_id = row["brand_id"].to_s.strip
+  payment_merchant_id = matched_offer&.fetch("merchantId", nil) || levanta_brand_id
   sales = num(row["sales"])
   commission = num(row["total_commission"] || row["commission"])
   expected = commission
@@ -439,8 +454,9 @@ payment_records = invoice_rows.map do |row|
     end
 
   compact_hash({
-    "id" => [matched_offer&.fetch("merchantId", nil) || row["brand_id"], payment_month_key(report_year, report_month), normalize_brand(brand_name)].join("::"),
-    "merchantId" => matched_offer&.fetch("merchantId", nil) || row["brand_id"],
+    "id" => [payment_merchant_id, payment_month_key(report_year, report_month), normalize_brand(brand_name)].join("::"),
+    "merchantId" => payment_merchant_id,
+    "levantaBrandId" => levanta_brand_id,
     "merchantName" => brand_name,
     "network" => matched_offer&.fetch("network", nil) || "Levanta",
     "tier" => matched_offer&.fetch("tier", nil) || "Unknown",
