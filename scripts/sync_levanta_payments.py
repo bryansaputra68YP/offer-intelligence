@@ -8,7 +8,9 @@ import datetime as dt
 import json
 import os
 import sys
+import time
 from pathlib import Path
+from urllib.error import URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
@@ -68,8 +70,18 @@ def fetch_payment_records_from_source(source_url: str, start: str, end: str) -> 
             "User-Agent": "YeahPromos-Offer-Intelligence-PaymentSync/1.0",
         },
     )
-    with urlopen(request, timeout=240) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    last_error = ""
+    for attempt in range(3):
+        try:
+            with urlopen(request, timeout=240) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except (URLError, TimeoutError, json.JSONDecodeError, OSError) as error:
+            last_error = str(error)
+            if attempt < 2:
+                time.sleep(1 + attempt)
+    else:
+        raise ValueError(f"Payment source request failed after retries: {last_error}")
     if not payload.get("ok"):
         raise ValueError(f"Payment source returned an error: {payload.get('error') or payload}")
     records = payload.get("records") or []
