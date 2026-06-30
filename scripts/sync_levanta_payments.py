@@ -9,6 +9,8 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +51,32 @@ def fetch_payment_records(months: list[tuple[str, int, int]], api_key: str) -> l
     return records
 
 
+def source_url_with_window(source_url: str, start: str, end: str) -> str:
+    parts = urlsplit(source_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["start"] = start
+    query["end"] = end
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def fetch_payment_records_from_source(source_url: str, start: str, end: str) -> tuple[list[dict], str]:
+    url = source_url_with_window(source_url, start, end)
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "YeahPromos-Offer-Intelligence-PaymentSync/1.0",
+        },
+    )
+    with urlopen(request, timeout=240) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not payload.get("ok"):
+        raise ValueError(f"Payment source returned an error: {payload.get('error') or payload}")
+    records = payload.get("records") or []
+    print(f"Fetched {len(records)} payment records from {url}")
+    return records, str(payload.get("checkedAt") or "")
+
+
 def validate_payment_records(records: list[dict], months: list[tuple[str, int, int]]) -> dict:
     if not records:
         raise ValueError("Levanta sync produced no payment records; refusing to overwrite static data")
@@ -81,34 +109,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start", default="2026-03", help="First report month, formatted YYYY-MM.")
     parser.add_argument("--end", default="2026-06", help="Last report month, formatted YYYY-MM.")
     parser.add_argument("--data-file", default=str(ROOT / "public" / "chatbot_data.js"), help="Path to chatbot_data.js.")
+    parser.add_argument(
+        "--source-url",
+        default=os.environ.get("PAYMENT_SYNC_SOURCE_URL", ""),
+        help="Optional Vercel payment API URL. When set, GitHub pulls records from Vercel instead of reading LEVANTA_API_KEY.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Fetch and validate without writing chatbot_data.js.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    api_key = os.environ.get("LEVANTA_API_KEY", "").strip()
-    if not api_key:
-        print("LEVANTA_API_KEY is required for payment sync.", file=sys.stderr)
-        return 2
-
     data_file = Path(args.data_file)
     payload = read_chatbot_payload(data_file)
     months = server.months_from_query({"start": [args.start], "end": [args.end]})
-    raw_records = fetch_payment_records(months, api_key)
+
+    source_url = str(args.source_url or "").strip()
+    checked_at = ""
+    if source_url:
+        raw_records, checked_at = fetch_payment_records_from_source(source_url, args.start, args.end)
+    else:
+        api_key = os.environ.get("LEVANTA_API_KEY", "").strip()
+        if not api_key:
+            print("Set PAYMENT_SYNC_SOURCE_URL or LEVANTA_API_KEY for payment sync.", file=sys.stderr)
+            return 2
+        raw_records = fetch_payment_records(months, api_key)
+
     records = [
         record
         for record in server.with_pending_placeholders(raw_records, months)
         if server.is_trackable_payment_record(record)
     ]
     validation = validate_payment_records(records, months)
-    checked_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    checked_at = checked_at or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
     payload["paymentRecords"] = records
     payload.setdefault("summary", {})["paymentSummary"] = server.payment_summary(records)
     payload["summary"]["paymentLastCheckedAt"] = checked_at
     payload["summary"]["paymentSyncWindow"] = {"start": args.start, "end": args.end}
-    payload.setdefault("sources", {})["payments"] = f"Levanta API {args.start}..{args.end}"
+    payload.setdefault("sources", {})["payments"] = (
+        f"Vercel Levanta API {args.start}..{args.end}" if source_url else f"Levanta API {args.start}..{args.end}"
+    )
 
     print(json.dumps({"checkedAt": checked_at, **validation}, ensure_ascii=False, indent=2))
     if not args.dry_run:

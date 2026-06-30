@@ -11,8 +11,10 @@ permissions:
 
 jobs:
   sync-payments:
-    name: Pull Levanta payments and update static data
+    name: Pull Vercel payments and update static data
     runs-on: ubuntu-latest
+    env:
+      PAYMENT_SYNC_SOURCE_URL: https://ypoffer-intel.vercel.app/api/levanta/payments
 
     steps:
       - name: Check out repository
@@ -25,10 +27,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Sync Levanta payment records
-        env:
-          LEVANTA_API_KEY: ${{ secrets.LEVANTA_API_KEY }}
-        run: python scripts/sync_levanta_payments.py --start 2026-03 --end 2026-06
+      - name: Sync Levanta payment records from Vercel
+        run: python scripts/sync_levanta_payments.py --start 2026-03 --end 2026-06 --source-url "$PAYMENT_SYNC_SOURCE_URL"
 
       - name: Validate payment placeholders
         run: python scripts/test_payment_placeholders.py
