@@ -583,6 +583,19 @@
     return Array.from(values).sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
   }
 
+  let allCategoryValuesCache = null;
+
+  function allCategoryValues() {
+    if (!allCategoryValuesCache) {
+      const values = new Set();
+      offers.forEach((offer) => {
+        categoryParts(offer).forEach((value) => values.add(String(value).trim()));
+      });
+      allCategoryValuesCache = Array.from(values).sort((a, b) => String(b).length - String(a).length);
+    }
+    return allCategoryValuesCache;
+  }
+
   function hasMainCategoryValue(category) {
     if (!mainCategoryNormsCache) {
       mainCategoryNormsCache = new Set(uniqueCategoryValues().map((value) => normalize(value)));
@@ -1731,6 +1744,11 @@
       .trim();
   }
 
+  function hasCategoryIntentText(text) {
+    return /\b(?:category|categories|subcategory|subcategories|main\s+category|category-wise|categorywise)\b/i.test(String(text || "")) ||
+      /品类|类别|类目|主品类|主类目|子品类|子类目|分类/.test(String(text || ""));
+  }
+
   function categoryScore(query, category) {
     const queryTokens = meaningfulTokens(query);
     if (!queryTokens.length) return 0;
@@ -1741,7 +1759,11 @@
     if (categoryNorm === queryNorm) score += 110;
     else if (categoryNorm.includes(queryNorm) || queryNorm.includes(categoryNorm)) score += 55;
     const matched = queryTokens.filter((queryToken) => (
-      categoryTokens.some((categoryToken) => categoryToken === queryToken || categoryToken.includes(queryToken) || queryToken.includes(categoryToken))
+      categoryTokens.some((categoryToken) => {
+        if (categoryToken === queryToken) return true;
+        if (categoryToken.length <= 3 || queryToken.length <= 3) return false;
+        return categoryToken.includes(queryToken) || queryToken.includes(categoryToken);
+      })
     )).length;
     score += (matched / queryTokens.length) * 70;
     score += categoryTokens.length ? (matched / categoryTokens.length) * 20 : 0;
@@ -1749,12 +1771,39 @@
   }
 
   function categoryForPrompt(text) {
-    const zhCategory = chatbotI18n.categoryForPrompt && chatbotI18n.categoryForPrompt(text, uniqueValues("category"));
+    const knownCategories = allCategoryValues();
+    const zhCategory = /[\u4e00-\u9fff]/.test(String(text || "")) && chatbotI18n.categoryForPrompt && chatbotI18n.categoryForPrompt(text, knownCategories);
     if (zhCategory) return zhCategory;
-    const lower = text.toLowerCase();
-    const categories = uniqueCategoryValues().filter((cat) => cat !== "Uncategorized");
+    const lower = String(text || "").toLowerCase();
     const phrase = cleanedCategoryPhrase(text);
     const phraseTokens = meaningfulTokens(phrase);
+    const mainCategories = uniqueCategoryValues()
+      .filter((cat) => cat !== "Uncategorized")
+      .sort((a, b) => String(b).length - String(a).length);
+    const directMain = mainCategories.find((category) => {
+      const categoryLower = String(category || "").toLowerCase();
+      return categoryLower && (lower.includes(categoryLower) || String(phrase || "").toLowerCase().includes(categoryLower));
+    });
+    if (directMain) return directMain;
+    if (phrase) {
+      const bestMain = mainCategories
+        .map((category) => ({ category, score: categoryScore(phrase, category) }))
+        .sort((a, b) => b.score - a.score)[0];
+      const mainThreshold = hasCategoryIntentText(text) ? 52 : 68;
+      if (bestMain && bestMain.score >= mainThreshold) return bestMain.category;
+    }
+    const direct = knownCategories.find((category) => {
+      const categoryLower = String(category || "").toLowerCase();
+      return categoryLower && categoryLower !== "uncategorized" && (lower.includes(categoryLower) || String(phrase || "").toLowerCase().includes(categoryLower));
+    });
+    if (direct) return direct;
+    if (phrase) {
+      const best = knownCategories
+        .map((category) => ({ category, score: categoryScore(phrase, category) }))
+        .sort((a, b) => b.score - a.score)[0];
+      const threshold = hasCategoryIntentText(text) ? 52 : 62;
+      if (best && best.score >= threshold) return best.category;
+    }
     for (const [canonical, aliases] of Object.entries(categoryAliases)) {
       if (aliases.some((alias) => words(alias).length > 1 && textIncludesAlias(lower, alias))) return canonical;
     }
@@ -1763,19 +1812,9 @@
         if (aliases.some((alias) => textIncludesAlias(lower, alias))) return canonical;
       }
     }
-    if (phrase) {
-      const best = categories
-        .map((category) => ({ category, score: categoryScore(phrase, category) }))
-        .sort((a, b) => b.score - a.score)[0];
-      if (best && best.score >= 58) return best.category;
-    }
     for (const [canonical, aliases] of Object.entries(categoryAliases)) {
       if (aliases.some((alias) => textIncludesAlias(lower, alias))) return canonical;
     }
-    const direct = categories.find((cat) => lower.includes(cat.toLowerCase()));
-    if (direct) return direct;
-    if (!phrase) return null;
-    if (/(?:offers?|recommendations?)\s*$/i.test(String(text || ""))) return phrase;
     return null;
   }
 
@@ -1794,6 +1833,42 @@
       haystackTokens.some((token) => token === queryToken || token.includes(queryToken) || queryToken.includes(token))
     )).length;
     return matched >= Math.min(queryTokens.length, queryTokens.length <= 2 ? 2 : Math.ceil(queryTokens.length * 0.65));
+  }
+
+  function cleanedMerchantLookupPhrase(text) {
+    return String(text || "")
+      .replace(metricRangeFilterPattern(), " ")
+      .replace(metricFilterPattern(), " ")
+      .replace(metricTrailingComparisonPattern(), " ")
+      .replace(/\b(?:top|give|show|list|export|download|pull|find|search|recommend)\s+(?:me\s+)?(?:the\s+)?(?:top\s+)?\d{1,4}\b/gi, " ")
+      .replace(/\b\d{1,4}\s+(?:offers?|brands?|recommendations?)\b/gi, " ")
+      .replace(/\b(?:offers?|brands?|recommendations?|recommend|please|best|top|show|give|list|pull|download|export|find|search|merchant|brand|overview|info|information|about|for|the)\b/gi, " ")
+      .replace(/推荐|请|帮我|给我|显示|列出|查找|搜索|拉取|下载|导出|最好|最佳|前\s*\d*|商家|品牌|信息|概览|关于/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function merchantLookupForPrompt(text) {
+    const cleaned = cleanedMerchantLookupPhrase(text);
+    if (meaningfulTokens(cleaned).length === 0 && normalize(cleaned).length < 2) return { cleaned, matches: [] };
+    return { cleaned, matches: findMerchantMatches(cleaned) };
+  }
+
+  function hasStrongMerchantLookup(text, category = null) {
+    if (category || hasCategoryIntentText(text) || findByAsin(text) || findByMerchantId(text)) return false;
+    if (tierFromPrompt(text) || promptHasPaymentTerms(String(text || "").toLowerCase())) return false;
+    if (extractMetricFilters(text).length) return false;
+    const { cleaned, matches } = merchantLookupForPrompt(text);
+    const first = matches[0];
+    if (!first) return false;
+    const cleanedNorm = normalize(cleaned);
+    const brandNorm = normalize(first.offer.brand);
+    if (!cleanedNorm || !brandNorm) return false;
+    const directBrandMatch = brandNorm === cleanedNorm || brandNorm.startsWith(cleanedNorm) || brandNorm.includes(cleanedNorm) || cleanedNorm.includes(brandNorm);
+    const second = matches[1];
+    return (directBrandMatch && first.score >= 60) ||
+      first.adjusted >= 95 ||
+      (first.adjusted >= 85 && (!second || first.adjusted - second.adjusted > 12));
   }
 
   function tierFromPrompt(text) {
@@ -1828,11 +1903,14 @@
     if (findByAsin(userMessage)) return "asin";
     if (findByMerchantId(userMessage)) return "merchant";
     const zhIntent = chatbotI18n.detectIntent && chatbotI18n.detectIntent(userMessage);
-    if (zhIntent) return zhIntent;
+    const category = categoryForPrompt(userMessage);
+    if (zhIntent && zhIntent !== "recommendation" && zhIntent !== "category") return zhIntent;
     if (/payment|paid|unpaid|late|issue|cycle/.test(lower) || /付款|未付款|没付款|未支付|已付款|已支付|逾期|到期|待处理|支付|结算|款项|付款周期|支付周期|结算周期/.test(userMessage)) return "payment";
+    if (hasStrongMerchantLookup(userMessage, category)) return "merchant";
+    if (zhIntent === "recommendation") return "recommendation";
     if (/recommend|push|focus|best|should we/.test(lower) || /推荐|排行|排名|最好|最佳|主推|重点|应该|筛选|前\s*\d+/.test(userMessage) || wantsRecommendationList(userMessage)) return "recommendation";
     if (tierFromPrompt(userMessage)) return "tier";
-    if (categoryForPrompt(userMessage)) return "category";
+    if (category || zhIntent === "category") return "category";
     if (contextFollowup(lower)) return "merchant";
     return "merchant";
   }
@@ -3811,5 +3889,14 @@
     window.setInterval(maybeAutoSyncLevantaPayments, AUTO_PAYMENT_SYNC_INTERVAL_MS);
   }
 
-  init();
+  if (window.__OFFER_INTELLIGENCE_TEST__) {
+    window.OFFER_INTELLIGENCE_TEST_HOOKS = {
+      categoryForPrompt,
+      detectQueryIntent,
+      cleanedMerchantLookupPhrase,
+      hasStrongMerchantLookup
+    };
+  } else {
+    init();
+  }
 })();
