@@ -4,7 +4,15 @@
   const offers = data.offers || [];
   const chatbotI18n = window.CHATBOT_I18N || {};
   const tier2Rules = window.TIER2_RECOMMENDATION_RULES || {};
+  const offersByMerchantId = new Map();
+  const offerGroupsByMerchantId = new Map();
   offers.forEach((offer) => {
+    const merchantId = String(offer.merchantId || "").trim();
+    if (merchantId) {
+      if (!offersByMerchantId.has(merchantId)) offersByMerchantId.set(merchantId, offer);
+      if (!offerGroupsByMerchantId.has(merchantId)) offerGroupsByMerchantId.set(merchantId, []);
+      offerGroupsByMerchantId.get(merchantId).push(offer);
+    }
     offer.paymentCycle = normalizePaymentCycle(offer.paymentCycle, offer.network);
   });
   const PAYMENT_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -116,6 +124,7 @@
     tierPageSubtitle: document.getElementById("tierPageSubtitle"),
     tierPageSummary: document.getElementById("tierPageSummary"),
     tierPageNotes: document.getElementById("tierPageNotes"),
+    tierCategorySummary: document.getElementById("tierCategorySummary"),
     tierTableTitle: document.getElementById("tierTableTitle"),
     tierTableCount: document.getElementById("tierTableCount"),
     tierSheetHead: document.getElementById("tierSheetHead"),
@@ -3516,8 +3525,7 @@
       ["Remaining Amount", (record) => number(record.remainingAmount)],
       ["Payment Cycle Days", (record) => number(record.paymentCycle)],
       ["Expected Payment Date", (record) => record.expectedPaymentDate || record.paymentAvailabilityDate || ""],
-      ["Last Checked", (record) => record.lastCheckedDate || ""],
-      ["Notes", (record) => record.notes || ""]
+      ["Last Checked", (record) => record.lastCheckedDate || ""]
     ];
   }
 
@@ -3579,19 +3587,24 @@
   }
 
   function workbookXml(sheetName = "Recommendations") {
+    const sheetNames = Array.isArray(sheetName) ? sheetName : [sheetName];
+    const sheets = sheetNames.map((name, index) => (
+      `<sheet name="${xmlEscape(safeSheetName(name || `Sheet ${index + 1}`))}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`
+    )).join("");
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets>
-    <sheet name="${xmlEscape(safeSheetName(sheetName))}" sheetId="1" r:id="rId1"/>
-  </sheets>
+  <sheets>${sheets}</sheets>
 </workbook>`;
   }
 
-  function workbookRelsXml() {
+  function workbookRelsXml(sheetCount = 1) {
+    const worksheetRels = Array.from({ length: sheetCount }, (_, index) => (
+      `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`
+    )).join("\n  ");
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  ${worksheetRels}
+  <Relationship Id="rId${sheetCount + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>`;
   }
 
@@ -3602,13 +3615,16 @@
 </Relationships>`;
   }
 
-  function contentTypesXml() {
+  function contentTypesXml(sheetCount = 1) {
+    const worksheetTypes = Array.from({ length: sheetCount }, (_, index) => (
+      `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+    )).join("\n  ");
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  ${worksheetTypes}
   <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>`;
   }
@@ -3700,15 +3716,55 @@
     return concatBytes([...locals, centralDirectory, end]);
   }
 
-  function createRecommendationWorkbook(rows, context = {}) {
+  function uniqueWorkbookSheetName(name, usedNames) {
+    const base = safeSheetName(name || "Export");
+    let candidate = base;
+    let index = 2;
+    while (usedNames.has(candidate.toLowerCase())) {
+      const suffix = ` ${index}`;
+      candidate = `${base.slice(0, Math.max(1, 31 - suffix.length))}${suffix}`;
+      index += 1;
+    }
+    usedNames.add(candidate.toLowerCase());
+    return candidate;
+  }
+
+  function normalizeWorkbookSheets(sheets) {
+    const usedNames = new Set();
+    return (sheets.length ? sheets : [{ rows: [], sheetName: "Export" }]).map((sheet, index) => {
+      const rows = sheet.rows || [];
+      return {
+        ...sheet,
+        rows,
+        sheetName: uniqueWorkbookSheetName(sheet.sheetName || `Sheet ${index + 1}`, usedNames),
+        columns: sheet.columns || sheet.downloadColumns || objectExportColumns(rows)
+      };
+    });
+  }
+
+  function createWorkbookSheets(sheets) {
+    const normalizedSheets = normalizeWorkbookSheets(sheets);
+    const sheetCount = normalizedSheets.length;
     return createZip([
-      { name: "[Content_Types].xml", data: contentTypesXml() },
+      { name: "[Content_Types].xml", data: contentTypesXml(sheetCount) },
       { name: "_rels/.rels", data: rootRelsXml() },
-      { name: "xl/workbook.xml", data: workbookXml(context.sheetName) },
-      { name: "xl/_rels/workbook.xml.rels", data: workbookRelsXml() },
+      { name: "xl/workbook.xml", data: workbookXml(normalizedSheets.map((sheet) => sheet.sheetName)) },
+      { name: "xl/_rels/workbook.xml.rels", data: workbookRelsXml(sheetCount) },
       { name: "xl/styles.xml", data: stylesXml() },
-      { name: "xl/worksheets/sheet1.xml", data: worksheetXml(rows, context) }
+      ...normalizedSheets.map((sheet, index) => ({ name: `xl/worksheets/sheet${index + 1}.xml`, data: worksheetXml(sheet.rows, sheet) }))
     ]);
+  }
+
+  function createRecommendationWorkbook(rows, context = {}) {
+    if (Array.isArray(context.sheets) && context.sheets.length) {
+      return createWorkbookSheets(context.sheets.map((sheet) => ({ ...context, ...sheet, sheets: undefined })));
+    }
+    return createWorkbookSheets([{
+      ...context,
+      rows,
+      columns: context.columns || recommendationExportColumns(),
+      sheetName: context.sheetName || "Recommendations"
+    }]);
   }
 
   function triggerWorkbookDownload(workbook, filename) {
@@ -3775,12 +3831,33 @@
     if (sheet.headers && sheet.headers.length) {
       const rows = sortReportRows(getFilteredTierSheetRows(sheet), state.tierSheetSort, (row, key) => row[key]);
       const headers = displayHeadersForSheet(sheet, sheet.headers);
+      const categoryRows = tierCategorySummaryExportRows(sheet, rows);
+      const categoryHeaders = tierCategorySummaryExportHeaders();
+      const offerListRows = tierOfferListExportRows(sheet, rows);
+      const offerListHeaders = tierOfferListExportHeaders();
       downloadRowsAsXlsx(rows, {
         downloadType: "sheet",
         filePrefix: "tier_records",
         exportScope: state.selectedTierPage,
         sheetName: state.selectedTierPage,
-        downloadColumns: objectExportColumns(rows, headers)
+        downloadColumns: objectExportColumns(rows, headers),
+        sheets: [
+          {
+            sheetName: state.selectedTierPage,
+            rows,
+            columns: objectExportColumns(rows, headers)
+          },
+          {
+            sheetName: "Category Summary",
+            rows: categoryRows,
+            columns: objectExportColumns(categoryRows, categoryHeaders)
+          },
+          {
+            sheetName: "Offer List",
+            rows: offerListRows,
+            columns: objectExportColumns(offerListRows, offerListHeaders)
+          }
+        ]
       });
       return;
     }
@@ -3892,7 +3969,6 @@
         <td>${escapeHtml(record.paymentCycle ? `${record.paymentCycle} days` : "-")}</td>
         <td>${escapeHtml(record.expectedPaymentDate || record.paymentAvailabilityDate || "-")}</td>
         <td>${escapeHtml(record.lastCheckedDate || "-")}</td>
-        <td>${escapeHtml(record.notes || "-")}</td>
       </tr>`
     )).join("");
   }
@@ -4116,6 +4192,207 @@
       .filter((row) => parseSheetNumber(rowValue(row, ["Revenue", "June Revenue", "May Revenue"])) >= minRevenue);
   }
 
+  function tierRowMerchantId(row) {
+    return String(rowValue(row, ["Merchant ID", "MerchantID", "ID"]) || "").trim().replace(/\.0$/, "");
+  }
+
+  function tierRowMerchantName(row) {
+    return String(rowValue(row, ["Merchant Name", "Brand", "Merchant"]) || "").trim();
+  }
+
+  function offerForTierRow(row) {
+    const merchantId = tierRowMerchantId(row);
+    return merchantId ? offersByMerchantId.get(merchantId) || null : null;
+  }
+
+  function offersForTierRow(row) {
+    const merchantId = tierRowMerchantId(row);
+    return merchantId ? offerGroupsByMerchantId.get(merchantId) || [] : [];
+  }
+
+  function tierRowCategory(row) {
+    const offer = offerForTierRow(row);
+    if (offer) return displayCategory(offer) || "Uncategorized";
+    return cleanCategoryValue(rowValue(row, ["Category", "Main Category", "Main category", "Sheet Category"])) || "Uncategorized";
+  }
+
+  function tierRowNumber(row, keys) {
+    return parseSheetNumber(rowValue(row, keys));
+  }
+
+  function tierRowRevenue(row) {
+    return tierRowNumber(row, ["Revenue", "June Revenue", "May Revenue", "Sales Amount", "Sales"]);
+  }
+
+  function tierRowOrders(row) {
+    return tierRowNumber(row, ["Order count", "Order Count", "Orders"]);
+  }
+
+  function tierRowClicks(row) {
+    return tierRowNumber(row, ["Clicks", "Total Clicks"]);
+  }
+
+  function tierRowEpc(row) {
+    return tierRowNumber(row, ["Backend EPC", "EPC"]);
+  }
+
+  function compareTierCategorySummaryRows(a, b) {
+    if (a.category === "Uncategorized" && b.category !== "Uncategorized") return 1;
+    if (b.category === "Uncategorized" && a.category !== "Uncategorized") return -1;
+    return number(b.revenue) - number(a.revenue) ||
+      number(b.orders) - number(a.orders) ||
+      number(b.merchantCount) - number(a.merchantCount) ||
+      String(a.category || "").localeCompare(String(b.category || ""), undefined, { numeric: true, sensitivity: "base" });
+  }
+
+  function tierCategorySummaryRows(sheet, rows) {
+    const groups = new Map();
+    (rows || []).forEach((row) => {
+      const category = tierRowCategory(row);
+      if (!groups.has(category)) {
+        groups.set(category, {
+          category,
+          rows: [],
+          merchantIds: new Set(),
+          revenue: 0,
+          orders: 0,
+          clicks: 0,
+          epcWeightedByClicks: 0,
+          epcSum: 0,
+          epcCount: 0
+        });
+      }
+      const group = groups.get(category);
+      const merchantId = tierRowMerchantId(row);
+      const clicks = tierRowClicks(row);
+      const epc = tierRowEpc(row);
+      group.rows.push(row);
+      if (merchantId) group.merchantIds.add(merchantId);
+      group.revenue += tierRowRevenue(row);
+      group.orders += tierRowOrders(row);
+      group.clicks += clicks;
+      if (epc) {
+        if (clicks) group.epcWeightedByClicks += epc * clicks;
+        group.epcSum += epc;
+        group.epcCount += 1;
+      }
+    });
+
+    return Array.from(groups.values()).map((group) => {
+      const sortedRows = group.rows.slice().sort((a, b) => tierRowRevenue(b) - tierRowRevenue(a) || tierRowOrders(b) - tierRowOrders(a) || tierRowClicks(b) - tierRowClicks(a));
+      const topRow = sortedRows[0] || {};
+      const previewMerchants = sortedRows.slice(0, 3).map(tierRowMerchantName).filter(Boolean).join(", ");
+      return {
+        category: group.category,
+        merchantCount: group.merchantIds.size || group.rows.length,
+        rowCount: group.rows.length,
+        revenue: group.revenue,
+        orders: group.orders,
+        clicks: group.clicks,
+        avgCvr: group.clicks ? group.orders / group.clicks : null,
+        avgEpc: group.clicks && group.epcWeightedByClicks ? group.epcWeightedByClicks / group.clicks : (group.epcCount ? group.epcSum / group.epcCount : null),
+        avgAov: group.orders ? group.revenue / group.orders : null,
+        topMerchant: tierRowMerchantName(topRow),
+        previewMerchants
+      };
+    }).sort(compareTierCategorySummaryRows);
+  }
+
+  function tierCategorySummaryTableRows(groups) {
+    return groups.map((group) => `<tr>
+      <td><strong>${escapeHtml(group.category)}</strong><p>${escapeHtml(group.previewMerchants || "-")}</p></td>
+      <td>${number(group.merchantCount).toLocaleString()}</td>
+      <td>${shortMoney(group.revenue)}</td>
+      <td>${number(group.orders).toLocaleString()}</td>
+      <td>${shortPct(group.avgCvr)}</td>
+      <td>${shortEpc(group.avgEpc)}</td>
+      <td>${escapeHtml(group.topMerchant || "-")}</td>
+    </tr>`).join("");
+  }
+
+  function renderTierCategorySummary(sheet, rows) {
+    const groups = tierCategorySummaryRows(sheet, rows);
+    const totalRevenue = groups.reduce((sum, group) => sum + number(group.revenue), 0);
+    const totalOrders = groups.reduce((sum, group) => sum + number(group.orders), 0);
+    const totalClicks = groups.reduce((sum, group) => sum + number(group.clicks), 0);
+    const merchantCount = groups.reduce((sum, group) => sum + number(group.merchantCount), 0);
+    els.tierCategorySummary.innerHTML = `<div class="tier-category-header">
+      <div>
+        <h3>Category-wise report</h3>
+        <p>${number(rows.length).toLocaleString()} rows / ${number(groups.length).toLocaleString()} categories</p>
+      </div>
+      <dl>
+        <div><dt>${escapeHtml(labelText("Merchants"))}</dt><dd>${merchantCount.toLocaleString()}</dd></div>
+        <div><dt>${escapeHtml(labelText("Revenue"))}</dt><dd>${shortMoney(totalRevenue)}</dd></div>
+        <div><dt>${escapeHtml(labelText("Orders"))}</dt><dd>${totalOrders.toLocaleString()}</dd></div>
+        <div><dt>${escapeHtml(labelText("CVR"))}</dt><dd>${shortPct(totalClicks ? totalOrders / totalClicks : null)}</dd></div>
+      </dl>
+    </div>
+    <div class="table-wrap tier-category-table-wrap">
+      <table class="sheet-table tier-category-table">
+        <thead>
+          <tr>
+            <th>${escapeHtml(labelText("Category"))}</th>
+            <th>${escapeHtml(labelText("Merchants"))}</th>
+            <th>${escapeHtml(labelText("Revenue"))}</th>
+            <th>${escapeHtml(labelText("Orders"))}</th>
+            <th>${escapeHtml(labelText("CVR"))}</th>
+            <th>EPC</th>
+            <th>Top merchant</th>
+          </tr>
+        </thead>
+        <tbody>${groups.length ? tierCategorySummaryTableRows(groups) : `<tr><td colspan="7">No category rows match the current filters.</td></tr>`}</tbody>
+      </table>
+    </div>`;
+  }
+
+  function tierCategorySummaryExportHeaders() {
+    return ["Category", "Merchant Count", "Row Count", "Revenue", "Orders", "Clicks", "Avg Conversion", "Avg EPC", "AOV", "Top Merchant", "Top Merchants"];
+  }
+
+  function tierCategorySummaryExportRows(sheet, rows) {
+    return tierCategorySummaryRows(sheet, rows).map((group) => ({
+      "Category": group.category,
+      "Merchant Count": group.merchantCount,
+      "Row Count": group.rowCount,
+      "Revenue": group.revenue,
+      "Orders": group.orders,
+      "Clicks": group.clicks,
+      "Avg Conversion": group.avgCvr,
+      "Avg EPC": group.avgEpc,
+      "AOV": group.avgAov,
+      "Top Merchant": group.topMerchant,
+      "Top Merchants": group.previewMerchants
+    }));
+  }
+
+  function averageCommissionRateForTierRow(row) {
+    const rates = offersForTierRow(row)
+      .map((offer) => Number(offer.commissionRate))
+      .filter((rate) => Number.isFinite(rate));
+    if (!rates.length) return null;
+    return rates.reduce((sum, rate) => sum + rate, 0) / rates.length;
+  }
+
+  function roundedUpCommissionRateText(row) {
+    const rate = averageCommissionRateForTierRow(row);
+    if (rate === null) return "";
+    return `${Math.ceil(rate * 100)}%`;
+  }
+
+  function tierOfferListExportHeaders() {
+    return ["Merchant ID", "Merchant Name", "Category", "Avg Commission Rate"];
+  }
+
+  function tierOfferListExportRows(sheet, rows) {
+    return (rows || []).map((row) => ({
+      "Merchant ID": tierRowMerchantId(row),
+      "Merchant Name": tierRowMerchantName(row),
+      "Category": tierRowCategory(row),
+      "Avg Commission Rate": roundedUpCommissionRateText(row)
+    }));
+  }
+
   function renderTierPage(tierName) {
     const sheet = sheetByName(tierName);
     els.tierPageTitle.textContent = tierName;
@@ -4123,6 +4400,7 @@
     if (!sheet) {
       els.tierPageSummary.innerHTML = "";
       els.tierPageNotes.innerHTML = `<p>${escapeHtml(t("tier.noMatch", "No matching sheet tab was found in the current export."))}</p>`;
+      els.tierCategorySummary.innerHTML = "";
       els.tierSheetHead.innerHTML = "";
       els.tierSheetRows.innerHTML = "";
       els.tierTableCount.textContent = "";
@@ -4131,7 +4409,9 @@
     refreshTierSheetFilters(sheet);
     renderTierSummary(sheet);
     els.tierPageNotes.innerHTML = renderTierLogicSummary(sheet);
-    renderTierSheetTable(sheet);
+    const filteredRows = getFilteredTierSheetRows(sheet);
+    renderTierCategorySummary(sheet, filteredRows);
+    renderSheetTable(sheet, els.tierTableTitle, els.tierTableCount, els.tierSheetHead, els.tierSheetRows, filteredRows);
   }
 
   function targetRecords() {
