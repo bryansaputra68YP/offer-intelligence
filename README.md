@@ -65,6 +65,15 @@ Tier 2 recommendations read publisher counts such as `14/20` as `14 of 20 publis
 - Mature pools with low success rate should replace or rotate weaker publishers rather than adding more of the same traffic.
 - Red or declining offers should add fresh qualified test publishers to recover sales/orders and reduce Tier 3 risk.
 
+### Payment Report Mapping
+
+Payment records come from Levanta invoice data and should be attributed to Levanta merchant IDs when the same brand also has a direct offer in the system.
+
+- Live sync in `server.py`, static data generation in `scripts/build_offer_chatbot_data.rb`, and browser normalization in `public/app.js` prefer exact Levanta-network offer matches for Levanta payment rows.
+- If Levanta provides a brand UUID, the dashboard keeps it as `levantaBrandId` while displaying the matched internal Levanta merchant ID.
+- Direct offers with the same brand name do not inherit Levanta payment status or sales.
+- RENPHO Group payment rows map to Levanta MID `362938`; RENPHO Wellness payment rows map to Levanta MID `363199`.
+
 ### Dashboard Offer List
 
 The bottom offer list is grouped by main category instead of being a flat preview. Each category section shows its own conversion, AOV, revenue, order, and offer-count summary. Category groups are sorted by revenue, with `Uncategorized` placed last.
@@ -131,6 +140,7 @@ node scripts/test_chatbot_intent_flow.mjs
 node scripts/test_tier2_recommendation_rules.mjs
 node scripts/test_sheet_categories.mjs
 node scripts/test_zh_chatbot.mjs
+python -m scripts.test_payment_placeholders
 ```
 
 ## Security
