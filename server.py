@@ -173,6 +173,13 @@ def has_payable_payment_amount(record):
     )
 
 
+def is_trackable_payment_record(record):
+    status = str(record.get("paymentStatus") or "").strip().lower()
+    raw_status = str(record.get("rawStatus") or "").strip().lower()
+    is_pending = status == "pending" or "pending" in raw_status
+    return has_payable_payment_amount(record) or (is_pending and bool(payment_merchant_key(record)))
+
+
 def pending_placeholder_record(source, month_name, zero_based_month, year):
     merchant_id = str(source.get("merchantId") or "").strip()
     merchant_name = str(source.get("merchantName") or source.get("brand") or merchant_id or "Unknown merchant").strip()
@@ -422,7 +429,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(502, {"ok": False, "source": "levanta-api", "error": str(error)})
             return
 
-        records = [record for record in with_pending_placeholders(records, months) if has_payable_payment_amount(record)]
+        records = [record for record in with_pending_placeholders(records, months) if is_trackable_payment_record(record)]
 
         self.send_json(
             200,

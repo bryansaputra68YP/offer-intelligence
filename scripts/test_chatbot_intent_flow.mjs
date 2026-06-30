@@ -140,6 +140,20 @@ assertEqual(bundle.gaps.length, 1, "bundle should report a shortage when candida
 assertEqual(bundle.gaps[0].tier, "Tier 1", "shortage should identify the tier");
 assertEqual(bundle.gaps[0].gap, 55, "shortage should report the missing count");
 
+const paymentRows = hooks.getPaymentRecords();
+const paymentMonthCounts = paymentRows.reduce((counts, record) => {
+  counts[record.reportMonth] = (counts[record.reportMonth] || 0) + 1;
+  return counts;
+}, {});
+const paymentPlaceholderCounts = paymentRows.reduce((counts, record) => {
+  if (record.isPlaceholder) counts[record.reportMonth] = (counts[record.reportMonth] || 0) + 1;
+  return counts;
+}, {});
+assertTruthy(paymentMonthCounts.May > 0, "May pending payment rows should survive frontend filtering");
+assertTruthy(paymentMonthCounts.June > 0, "June pending payment rows should survive frontend filtering");
+assertTruthy(paymentPlaceholderCounts.May > 0, "May placeholder payment rows should remain visible");
+assertTruthy(paymentPlaceholderCounts.June > 0, "June placeholder payment rows should remain visible");
+
 const zhPaymentCycleBelow = hooks.extractPaymentCycleFilter("付款周期在100天以下的offer");
 assertEqual(zhPaymentCycleBelow.operator, "<", "Chinese 以下 should be strict below");
 assertEqual(zhPaymentCycleBelow.threshold, 100, "Chinese payment cycle filter should parse threshold");

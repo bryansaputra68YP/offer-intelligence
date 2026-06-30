@@ -1,0 +1,46 @@
+name: Sync Levanta payments
+
+on:
+  schedule:
+    # 10:00 Asia/Shanghai is 02:00 UTC.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-payments:
+    name: Pull Vercel payments and update static data
+    runs-on: ubuntu-latest
+    env:
+      PAYMENT_SYNC_SOURCE_URL: https://ypoffer-intel.vercel.app/api/levanta/payments
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync Levanta payment records from Vercel
+        run: python scripts/sync_levanta_payments.py --start 2026-03 --end 2026-06 --source-url "$PAYMENT_SYNC_SOURCE_URL"
+
+      - name: Validate payment placeholders
+        run: python scripts/test_payment_placeholders.py
+
+      - name: Commit updated payment data
+        run: |
+          if git diff --quiet -- public/chatbot_data.js; then
+            echo "No payment data changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/chatbot_data.js
+          git commit -m "Update Levanta payment data"
+          git push

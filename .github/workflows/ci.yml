@@ -24,6 +24,11 @@ jobs:
         with:
           node-version: 22
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Check JavaScript syntax
         run: |
           node --check public/app.js
@@ -36,3 +41,4 @@ jobs:
           node scripts/test_tier2_recommendation_rules.mjs
           node scripts/test_sheet_categories.mjs
           node scripts/test_zh_chatbot.mjs
+          python scripts/test_payment_placeholders.py

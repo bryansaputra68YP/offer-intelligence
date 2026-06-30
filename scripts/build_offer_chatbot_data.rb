@@ -120,6 +120,15 @@ rescue ArgumentError
   "Unknown"
 end
 
+def trackable_payment_record?(record)
+  has_amount = %w[commissionMade expectedPaymentAmount paidAmount remainingAmount].any? { |key| num(record[key]).to_f.positive? }
+  status = record["paymentStatus"].to_s.downcase
+  raw_status = record["rawStatus"].to_s.downcase
+  merchant_key = record["merchantId"].to_s.strip
+  merchant_key = normalize_brand(record["merchantName"]) if merchant_key.empty?
+  has_amount || (!merchant_key.empty? && (record["isPlaceholder"] || status == "pending" || raw_status.include?("pending")))
+end
+
 def compact_hash(hash)
   hash.each_with_object({}) do |(key, value), compacted|
     next if value.nil?
@@ -459,7 +468,7 @@ payment_records = invoice_rows.map do |row|
   })
 end
 payment_records = payment_records.select do |record|
-  %w[commissionMade expectedPaymentAmount paidAmount remainingAmount].any? { |key| num(record[key]).to_f.positive? }
+  trackable_payment_record?(record)
 end
 
 payment_summary = {

@@ -843,7 +843,7 @@
   function getPaymentRecords() {
     return paymentRecords
       .map((record) => ({ ...record, paymentStatus: calculatePaymentStatus(record) }))
-      .filter(hasPayablePaymentAmount);
+      .filter(isTrackablePaymentRecord);
   }
 
   function hasPayablePaymentAmount(record) {
@@ -853,6 +853,13 @@
       number(record.paidAmount) > 0 ||
       number(record.remainingAmount) > 0
     );
+  }
+
+  function isTrackablePaymentRecord(record) {
+    const status = String(record.paymentStatus || "").toLowerCase();
+    const rawStatus = String(record.rawStatus || "").toLowerCase();
+    const merchantKey = paymentMerchantKey(record);
+    return hasPayablePaymentAmount(record) || Boolean(merchantKey && (record.isPlaceholder || status === "pending" || rawStatus.includes("pending")));
   }
 
   function getPaymentByMerchant(merchant) {
@@ -4357,6 +4364,8 @@
       extractMetricSortIntent,
       extractPaymentCycleFilter,
       paymentCycleFilterText,
+      getPaymentRecords,
+      withPendingPaymentPlaceholders,
       requestedRecommendationCount,
       parseTierOfferRequest,
       answerPrompt,
