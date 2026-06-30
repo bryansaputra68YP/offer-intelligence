@@ -15,6 +15,12 @@ function assertTruthy(value, label) {
   if (!value) throw new Error(`${label}: expected a truthy value, got ${JSON.stringify(value)}`);
 }
 
+function assertApprox(actual, expected, label, tolerance = 1e-9) {
+  if (Math.abs(actual - expected) > tolerance) {
+    throw new Error(`${label}: expected ${expected}, got ${actual}`);
+  }
+}
+
 const elementStub = {
   addEventListener() {},
   classList: { add() {}, remove() {}, toggle() {} },
@@ -83,5 +89,46 @@ assertEqual(hooks.detectQueryIntent("Roborock robot vacuum"), "category", "brand
 
 assertEqual(hooks.categoryForPrompt("top 5 offers"), null, "generic recommendation should not invent a category");
 assertEqual(hooks.detectQueryIntent("top 5 offers"), "recommendation", "generic recommendation should stay recommendation intent");
+
+const aovAbove = hooks.extractMetricFilters("aov above 100")[0];
+assertEqual(aovAbove.field, "aov", "aov above filter should use AOV");
+assertEqual(aovAbove.operator, ">", "aov above filter should be greater-than");
+assertEqual(aovAbove.threshold, 100, "aov above filter should keep the numeric threshold");
+
+const epcLower = hooks.extractMetricFilters("epc lower than 1")[0];
+assertEqual(epcLower.field, "epc", "epc lower filter should use EPC");
+assertEqual(epcLower.operator, "<", "epc lower filter should be less-than");
+assertEqual(epcLower.threshold, 1, "epc lower filter should keep the numeric threshold");
+
+const conversionAbove = hooks.extractMetricFilters("recommend me conversion above 10%")[0];
+assertEqual(conversionAbove.field, "conversionRate", "conversion filter should use CVR");
+assertEqual(conversionAbove.operator, ">", "conversion above filter should be greater-than");
+assertApprox(conversionAbove.threshold, 0.1, "conversion percent threshold should normalize to decimal");
+assertEqual(hooks.detectQueryIntent("recommend me conversion above 10%"), "recommendation", "metric filter recommendation should route to recommendations");
+
+const conversionBelow = hooks.extractMetricFilters("conversion below 2%")[0];
+assertEqual(conversionBelow.field, "conversionRate", "conversion below filter should use CVR");
+assertEqual(conversionBelow.operator, "<", "conversion below filter should be less-than");
+assertApprox(conversionBelow.threshold, 0.02, "conversion below percent threshold should normalize to decimal");
+
+const revenueSort = hooks.extractMetricSortIntent("offers with highest revenue");
+assertEqual(revenueSort.field, "salesAmount", "highest revenue should sort by revenue field");
+assertEqual(revenueSort.direction, "desc", "highest revenue should sort descending");
+assertEqual(hooks.detectQueryIntent("offers with highest revenue"), "recommendation", "highest revenue should route to recommendations");
+assertEqual(hooks.extractMetricSortIntent("offers with revenue highest").field, "salesAmount", "revenue highest wording should sort by revenue field");
+
+const commissionSort = hooks.extractMetricSortIntent("10 offers with highest commission");
+assertEqual(commissionSort.field, "affCommission", "highest commission should sort by commission made");
+assertEqual(commissionSort.direction, "desc", "highest commission should sort descending");
+assertEqual(hooks.requestedRecommendationCount("10 offers with highest commission"), 10, "requested count should respect 10 offers");
+
+const rankedByCommission = hooks.rankedRecommendations([
+  { brand: "Tier 2 large commission", tier: "Tier 2", salesAmount: 10000, orders: 20, conversionRate: 0.2, aov: 500, epc: 2, affCommission: 900 },
+  { brand: "Tier 1 smaller commission", tier: "Tier 1", salesAmount: 100, orders: 2, conversionRate: 0.01, aov: 50, epc: 0.5, affCommission: 100 },
+  { brand: "Tier 1 larger commission", tier: "Tier 1", salesAmount: 200, orders: 3, conversionRate: 0.02, aov: 70, epc: 0.6, affCommission: 300 }
+], { metricSort: commissionSort });
+assertEqual(rankedByCommission[0].brand, "Tier 1 larger commission", "metric sort should keep Tier 1 first and sort inside the tier");
+assertEqual(rankedByCommission[1].brand, "Tier 1 smaller commission", "lower Tier 1 commission should stay before lower tier offers");
+assertEqual(rankedByCommission[2].brand, "Tier 2 large commission", "large lower-tier commission should not jump ahead of Tier 1");
 
 console.log("Chatbot intent flow tests passed");
