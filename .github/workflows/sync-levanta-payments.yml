@@ -14,7 +14,7 @@ jobs:
     name: Pull Vercel payments and update static data
     runs-on: ubuntu-latest
     env:
-      PAYMENT_SYNC_SOURCE_URL: https://ypoffer-intel.vercel.app/api/levanta/payments
+      PAYMENT_SYNC_SOURCE_URL: ${{ vars.PAYMENT_SYNC_SOURCE_URL }}
 
     steps:
       - name: Check out repository
