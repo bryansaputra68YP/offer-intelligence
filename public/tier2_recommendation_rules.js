@@ -98,25 +98,25 @@
       under_sample: {
         label: "Publisher test expansion",
         action: `Expand the test pool toward ${pool} publishers.`,
-        idea: `${summary}; the sample is still below the target pool, so add more qualified publishers to validate sales potential.`,
+        idea: `${summary}; the publisher pool is still below the ${pool} target, so add more qualified publishers to validate sales and order potential.`,
         caution: "Keep additions controlled until the publisher pool reaches a reliable sample size."
       },
       low_success_replace: {
         label: "Publisher replacement",
         action: "Replace or rotate underperforming publishers to raise success rate.",
-        idea: `${summary} with ${success}; the pool is large enough, but success rate is low, so swap weaker publishers for better-fit ones.`,
+        idea: `${summary} with ${success}; the pool is already large enough, but success rate is low, so replace weaker publishers in the 20-30 person test pool with better-fit ones.`,
         caution: "Avoid adding more of the same traffic; improve the mix before scaling volume."
       },
       green_optimize: {
         label: "Optimization only",
-        action: "Optimize current converting publishers; do not add broad new publishers.",
-        idea: `${summary} with ${success}; keep the green offer focused on publishers that already work and scale through optimization.`,
-        caution: "Do not bring in broad new publishers; protect the working publisher mix."
+        action: "Optimize current converting publishers; do not bring more publishers to this green offer.",
+        idea: `${summary} with ${success}; green means keep the publishers that already work, scale those winners, and focus on optimization instead of adding more publishers.`,
+        caution: "Do not recruit new publishers for green offers; protect and scale the working publisher mix."
       },
       red_recovery: {
         label: "Red recovery test",
         action: "Add fresh test publishers to recover sales/orders and prevent Tier 3 risk.",
-        idea: `${summary} with ${success}; the offer is declining or watch-listed, so refresh the publisher pool and push for more orders.`,
+        idea: `${summary} with ${success}; red means the offer is declining and could fall to Tier 3, so bring in more qualified publishers to increase sales and orders.`,
         caution: "Monitor closely for Tier 3 movement if the added publisher tests do not lift sales/orders."
       },
       maintain_optimize: {
@@ -189,12 +189,12 @@
     let code = "maintain_optimize";
     if (redSignal) {
       code = "red_recovery";
-    } else if (total !== null && total < options.minPublisherPool) {
-      code = greenSignal ? "green_under_sample" : "under_sample";
-    } else if (total !== null && rate !== null && total >= options.minPublisherPool && rate < options.lowSuccessRate) {
-      code = "low_success_replace";
     } else if (greenSignal) {
       code = "green_optimize";
+    } else if (total !== null && total < options.minPublisherPool) {
+      code = "under_sample";
+    } else if (total !== null && rate !== null && total >= options.minPublisherPool && rate < options.lowSuccessRate) {
+      code = "low_success_replace";
     }
 
     const copy = textPack(code, metrics, language, options);

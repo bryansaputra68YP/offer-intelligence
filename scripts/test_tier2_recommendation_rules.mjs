@@ -53,14 +53,21 @@ const green = rules.strategyForOffer(
   { tierGroup: "Core Tier 2", highlightStatus: "Green active opportunity", language: "en" }
 );
 assertEqual(green.code, "green_optimize", "Green Tier 2 with enough publishers should stay in optimization mode.");
-assertMatch(green.action, /do not add broad new publishers/i, "Green optimization should avoid broad new publisher additions.");
+assertMatch(green.action, /do not bring more publishers/i, "Green optimization should avoid new publisher additions.");
 
 const greenUnderSample = rules.strategyForOffer(
   { tier: "Tier 2", phase: "Growing", publisherCount: "9/19", successRate: 0.4737 },
   { tierGroup: "Core Tier 2", highlightStatus: "Green active opportunity", language: "en" }
 );
-assertEqual(greenUnderSample.code, "green_under_sample", "Green Tier 2 below 20 publishers should allow controlled fill.");
-assertMatch(greenUnderSample.idea, /20-30/, "Controlled fill should target the 20-30 publisher pool.");
+assertEqual(greenUnderSample.code, "green_optimize", "Green Tier 2 below 20 publishers should still stay in optimization mode.");
+assertMatch(greenUnderSample.idea, /keep the publishers that already work/i, "Green Tier 2 should keep and scale working publishers.");
+
+const underSample = rules.strategyForOffer(
+  { tier: "Tier 2", phase: "Stable", publisherCount: "9/19", successRate: 0.4737 },
+  { tierGroup: "Core Tier 2", highlightStatus: "Yellow publisher expansion", language: "en" }
+);
+assertEqual(underSample.code, "under_sample", "Non-green Tier 2 below 20 publishers should expand the test pool.");
+assertMatch(underSample.idea, /20-30 target/i, "Under-sampled Tier 2 should target the 20-30 publisher pool.");
 
 const lowSuccess = rules.strategyForOffer(
   { tier: "Tier 2", phase: "Stable", publisherCount: "12/40", successRate: 0.3 },
@@ -68,6 +75,7 @@ const lowSuccess = rules.strategyForOffer(
 );
 assertEqual(lowSuccess.code, "low_success_replace", "Adequate publisher pool with low success should trigger replacement.");
 assertMatch(lowSuccess.action, /replace or rotate/i, "Low success should recommend replacing or rotating publishers.");
+assertMatch(lowSuccess.idea, /replace weaker publishers in the 20-30 person test pool/i, "Low success should replace publishers within the existing test pool.");
 
 const redDeclining = rules.strategyForOffer(
   { tier: "Tier 2", phase: "Declining", publisherCount: "6/18", successRate: 0.3333 },
@@ -76,6 +84,7 @@ const redDeclining = rules.strategyForOffer(
 assertEqual(redDeclining.code, "red_recovery", "Red or declining Tier 2 should trigger recovery testing.");
 assertMatch(redDeclining.action, /sales\/orders/i, "Red recovery should focus on recovering sales/orders.");
 assertMatch(redDeclining.action, /Tier 3/i, "Red recovery should call out Tier 3 risk.");
+assertMatch(redDeclining.idea, /bring in more qualified publishers/i, "Red recovery should add more qualified publishers.");
 
 const redZh = rules.strategyForOffer(
   { tier: "Tier 2", phase: "Declining", publisherCount: "6/18", successRate: 0.3333 },
