@@ -65,6 +65,8 @@
     paymentSource: "saved invoice file",
     livePaymentsLoaded: false,
     livePaymentsLoading: false,
+    activeRecommendationBundle: null,
+    excludedRecommendationKeys: new Set(),
     recommendationDownloads: {},
     downloadSequence: 0,
     language: localStorage.getItem("offerLanguage") === "zh" ? "zh" : "en"
@@ -2691,6 +2693,255 @@
     return Math.min(limit, availableCount);
   }
 
+  function offerIdentityKey(offer) {
+    return `${String(offer && offer.merchantId || "").trim()}::${normalize(offer && offer.brand)}`;
+  }
+
+  function tierNameFromToken(value) {
+    const token = String(value || "").trim().toLowerCase();
+    if (token === "1" || token === "one") return "Tier 1";
+    if (token === "2" || token === "two") return "Tier 2";
+    if (token === "3" || token === "three") return "Tier 3";
+    if (token === "4" || token === "four") return "Tier 4";
+    return "";
+  }
+
+  function mergeTierPlanItem(plan, tier, count) {
+    if (!tier || !Number.isFinite(count) || count <= 0) return;
+    const existing = plan.find((item) => item.tier === tier);
+    const safeCount = Math.min(Math.floor(count), MAX_RECOMMENDATION_EXPORT);
+    if (existing) existing.count = safeCount;
+    else plan.push({ tier, count: safeCount });
+  }
+
+  function parseTierOfferRequest(prompt) {
+    const text = String(prompt || "");
+    const plan = [];
+    const countFirst = /\b(\d{1,4})\s*(?:offers?|brands?|recommendations?)?\s*(?:from|for|in|of)?\s*tier\s*([1-4])\b/gi;
+    const tierFirst = /\btier\s*([1-4])\s*(?:[:=\-]|with|for|of)?\s*(\d{1,4})\s*(?:offers?|brands?|recommendations?)?/gi;
+    let match;
+    while ((match = countFirst.exec(text))) {
+      mergeTierPlanItem(plan, tierNameFromToken(match[2]), Number(match[1]));
+    }
+    while ((match = tierFirst.exec(text))) {
+      mergeTierPlanItem(plan, tierNameFromToken(match[1]), Number(match[2]));
+    }
+    return plan;
+  }
+
+  function bundleRequestedCount(plan) {
+    return (plan || []).reduce((sum, item) => sum + number(item.count), 0);
+  }
+
+  function tierBundleCounts(rows) {
+    return rows.reduce((counts, offer) => {
+      counts[offer.tier] = (counts[offer.tier] || 0) + 1;
+      return counts;
+    }, {});
+  }
+
+  function tierCandidatePool(tier, context = {}) {
+    const metricFilters = context.metricFilters || [];
+    const pool = applyMetricFilters(offers.filter((offer) => offer.tier === tier), metricFilters);
+    return rankedRecommendations(pool, {
+      ...context,
+      includeTier4: true,
+      includeBlack: tier === "BLACK TIER" || context.includeBlack
+    });
+  }
+
+  function isExcludedRecommendationOffer(offer) {
+    return state.excludedRecommendationKeys.has(offerIdentityKey(offer));
+  }
+
+  function rebuildRecommendationBundle(plan, options = {}) {
+    const previousRows = options.previousRows || [];
+    const context = options.context || {};
+    const rows = [];
+    const gaps = [];
+    const selectedKeys = new Set();
+
+    plan.forEach((item) => {
+      const tier = item.tier;
+      const requested = Math.min(Math.max(Math.floor(number(item.count) || 0), 0), MAX_RECOMMENDATION_EXPORT);
+      const tierRows = [];
+      previousRows
+        .filter((offer) => offer.tier === tier)
+        .forEach((offer) => {
+          const key = offerIdentityKey(offer);
+          if (tierRows.length >= requested || selectedKeys.has(key) || isExcludedRecommendationOffer(offer)) return;
+          tierRows.push(offer);
+          selectedKeys.add(key);
+        });
+
+      tierCandidatePool(tier, context).forEach((offer) => {
+        const key = offerIdentityKey(offer);
+        if (tierRows.length >= requested || selectedKeys.has(key) || isExcludedRecommendationOffer(offer)) return;
+        tierRows.push(offer);
+        selectedKeys.add(key);
+      });
+
+      rows.push(...tierRows);
+      if (tierRows.length < requested) {
+        gaps.push({ tier, requested, available: tierRows.length, gap: requested - tierRows.length });
+      }
+    });
+
+    const bundle = {
+      plan: plan.map((item) => ({ tier: item.tier, count: item.count })),
+      rows,
+      gaps,
+      context,
+      requestedCount: bundleRequestedCount(plan),
+      excludedKeys: Array.from(state.excludedRecommendationKeys)
+    };
+    state.activeRecommendationBundle = bundle;
+    setContext(buildRecommendationContext(rows, {
+      ...context,
+      bundle: true,
+      bundlePlan: bundle.plan,
+      requestedCount: bundle.requestedCount,
+      exportCount: rows.length,
+      gaps
+    }));
+    return bundle;
+  }
+
+  function bundlePlanText(plan) {
+    return plan.map((item) => `${item.tier}: ${number(item.count).toLocaleString()}`).join(", ");
+  }
+
+  function bundleCountsText(rows) {
+    const counts = tierBundleCounts(rows);
+    return Object.keys(counts)
+      .sort((a, b) => tierPriority({ tier: a }, true, true) - tierPriority({ tier: b }, true, true))
+      .map((tier) => `${tier}: ${counts[tier].toLocaleString()}`)
+      .join(", ");
+  }
+
+  function bundleGapText(gaps) {
+    if (!gaps || !gaps.length) return "";
+    return gaps.map((gap) => `${gap.tier} requested ${gap.requested.toLocaleString()}, found ${gap.available.toLocaleString()}, short ${gap.gap.toLocaleString()}`).join("; ");
+  }
+
+  function renderRecommendationBundleHtml(bundle, options = {}) {
+    const previewRows = bundle.rows.slice(0, recommendationPreviewCount(bundle.requestedCount, bundle.rows.length));
+    const downloadId = registerRecommendationDownload(bundle.rows, {
+      ...bundle.context,
+      downloadType: "offers",
+      filePrefix: "offer_recommendations",
+      exportScope: "tier_mix",
+      sheetName: "Offer Recommendations"
+    }, bundle.requestedCount);
+    const action = options.action || "Built a recommendation package";
+    const gapText = bundleGapText(bundle.gaps);
+    const details = [
+      `Plan: ${bundlePlanText(bundle.plan)}`,
+      `Current file: ${bundle.rows.length.toLocaleString()} offers (${bundleCountsText(bundle.rows) || "none"})`,
+      gapText ? `Shortage: ${gapText}` : ""
+    ].filter(Boolean).join(". ");
+    const note = options.note ? `<p>${escapeHtml(options.note)}</p>` : "";
+    return `<p><strong>${escapeHtml(action)}.</strong> ${escapeHtml(details)}.</p>` +
+      note +
+      `<div class="download-card">
+        <div>
+          <strong>Offer recommendation file</strong>
+          <span>${escapeHtml(bundle.rows.length.toLocaleString())} offers in one Excel sheet. Excluded offers stay out for this chat session.</span>
+        </div>
+        <button class="download-xlsx-button" type="button" data-download-id="${escapeHtml(downloadId)}">Download Excel</button>
+      </div>` +
+      resultTable(previewRows, compactColumns);
+  }
+
+  function recommendationBundleAnswer(prompt, plan) {
+    const context = {
+      prompt,
+      includeTier4: true,
+      includeBlack: true,
+      metricFilters: extractMetricFilters(prompt),
+      metricSort: extractMetricSortIntent(prompt)
+    };
+    const bundle = rebuildRecommendationBundle(plan, { context });
+    return renderRecommendationBundleHtml(bundle);
+  }
+
+  function matchedOffersFromPrompt(prompt, pool) {
+    const normalizedPrompt = normalize(prompt);
+    const idMatches = new Set((String(prompt || "").match(/\b\d{5,8}(?:\.0)?\b/g) || []).map((id) => id.replace(/\.0$/, "")));
+    const ignoredTokens = new Set(["do", "not", "try", "dont", "want", "exclude", "remove", "skip", "change", "replace", "swap", "tier", "offer", "offers", "recommendation", "recommendations", "with", "other", "one", "another", "from", "the", "and"]);
+    const promptTokens = (String(prompt || "").toLowerCase().match(/[a-z0-9]+/g) || [])
+      .filter((token) => token.length >= 3 && !ignoredTokens.has(token));
+    const matches = [];
+    const seen = new Set();
+    [...pool]
+      .sort((a, b) => normalize(b.brand).length - normalize(a.brand).length)
+      .forEach((offer) => {
+        const key = offerIdentityKey(offer);
+        if (seen.has(key)) return;
+        const brand = normalize(offer.brand);
+        const id = String(offer.merchantId || "").trim();
+        const brandTokenMatch = promptTokens.some((token) => brand.includes(token));
+        if ((brand.length >= 3 && (normalizedPrompt.includes(brand) || brandTokenMatch)) || (id && idMatches.has(id))) {
+          seen.add(key);
+          matches.push(offer);
+        }
+      });
+    return matches;
+  }
+
+  function isRecommendationExclusionPrompt(prompt) {
+    return /\b(do\s*not\s*try|don't\s*try|dont\s*try|do\s*not\s*want|don't\s*want|dont\s*want|exclude|remove|skip|not\s*try)\b/i.test(prompt);
+  }
+
+  function isRecommendationReplacementPrompt(prompt) {
+    return /\b(change|replace|swap|another|other\s+one)\b/i.test(prompt) && Boolean(state.activeRecommendationBundle);
+  }
+
+  function recommendationBundleExclusionAnswer(prompt) {
+    const bundle = state.activeRecommendationBundle;
+    if (!bundle) return "Create a recommendation package first, then tell me which offers to exclude.";
+    let matches = matchedOffersFromPrompt(prompt, bundle.rows);
+    if (!matches.length) matches = matchedOffersFromPrompt(prompt, offers);
+    if (!matches.length) return "I could not match those offer names in the current data. Send the merchant names or IDs to exclude.";
+
+    const beforeRows = bundle.rows;
+    matches.forEach((offer) => state.excludedRecommendationKeys.add(offerIdentityKey(offer)));
+    const nextBundle = rebuildRecommendationBundle(bundle.plan, { previousRows: beforeRows, context: bundle.context });
+    const beforeKeys = new Set(beforeRows.map(offerIdentityKey));
+    const afterKeys = new Set(nextBundle.rows.map(offerIdentityKey));
+    const removed = beforeRows.filter((offer) => !afterKeys.has(offerIdentityKey(offer)));
+    const added = nextBundle.rows.filter((offer) => !beforeKeys.has(offerIdentityKey(offer)));
+    const removedText = removed.length ? `Removed: ${removed.map((offer) => offer.brand).join(", ")}` : `Excluded: ${matches.map((offer) => offer.brand).join(", ")}`;
+    const addedText = added.length ? `Added replacements: ${added.map((offer) => offer.brand).join(", ")}` : "No replacement was available for one or more excluded offers";
+    return renderRecommendationBundleHtml(nextBundle, {
+      action: "Updated the recommendation package",
+      note: `${removedText}. ${addedText}.`
+    });
+  }
+
+  function recommendationBundleReplacementAnswer(prompt) {
+    const bundle = state.activeRecommendationBundle;
+    if (!bundle) return "Create a recommendation package first, then ask me to change one offer.";
+    const promptedTier = tierFromPrompt(prompt);
+    const pool = promptedTier ? bundle.rows.filter((offer) => offer.tier === promptedTier) : bundle.rows;
+    if (!pool.length) return `There are no ${promptedTier || "matching"} offers in the current recommendation package.`;
+
+    const namedMatches = matchedOffersFromPrompt(prompt, pool);
+    const target = namedMatches[0] || pool[pool.length - 1];
+    const beforeRows = bundle.rows;
+    const beforeKeys = new Set(beforeRows.map(offerIdentityKey));
+    state.excludedRecommendationKeys.add(offerIdentityKey(target));
+    const nextBundle = rebuildRecommendationBundle(bundle.plan, { previousRows: beforeRows, context: bundle.context });
+    const replacement = nextBundle.rows.find((offer) => offer.tier === target.tier && !beforeKeys.has(offerIdentityKey(offer)));
+    const replacementText = replacement
+      ? `Replaced ${target.brand} with ${replacement.brand} from ${target.tier}.`
+      : `Removed ${target.brand} from ${target.tier}, but there was no unused replacement available.`;
+    return renderRecommendationBundleHtml(nextBundle, {
+      action: "Changed one recommendation",
+      note: replacementText
+    });
+  }
+
   function metricSortDescription(metricSort) {
     if (!metricSort || !metricSort.field) return "";
     const direction = metricSort.direction === "asc" ? "lowest" : "highest";
@@ -2886,6 +3137,10 @@
     const lower = prompt.toLowerCase().trim();
     const language = responseLanguageFor(prompt);
     const copy = chatCopy(language);
+    const tierOfferPlan = parseTierOfferRequest(prompt);
+    if (tierOfferPlan.length) return recommendationBundleAnswer(prompt, tierOfferPlan);
+    if (isRecommendationExclusionPrompt(prompt)) return recommendationBundleExclusionAnswer(prompt);
+    if (isRecommendationReplacementPrompt(prompt)) return recommendationBundleReplacementAnswer(prompt);
     const intent = detectQueryIntent(prompt);
     const asin = findByAsin(prompt);
     if (asin && intent === "asin") return asinAnswer(asin);
@@ -4073,6 +4328,10 @@
       extractMetricFilters,
       extractMetricSortIntent,
       requestedRecommendationCount,
+      parseTierOfferRequest,
+      answerPrompt,
+      currentRecommendationBundle: () => state.activeRecommendationBundle,
+      excludedRecommendationKeys: () => Array.from(state.excludedRecommendationKeys),
       rankedRecommendations,
       displayCategory,
       dashboardCategoryGroups

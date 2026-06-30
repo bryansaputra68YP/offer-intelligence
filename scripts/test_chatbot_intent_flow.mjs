@@ -90,6 +90,50 @@ assertEqual(hooks.detectQueryIntent("Roborock robot vacuum"), "category", "brand
 assertEqual(hooks.categoryForPrompt("top 5 offers"), null, "generic recommendation should not invent a category");
 assertEqual(hooks.detectQueryIntent("top 5 offers"), "recommendation", "generic recommendation should stay recommendation intent");
 
+const tierBundlePlan = hooks.parseTierOfferRequest("I want 2 offers from tier 1, 3 offers from tier 3, and 1 offer from tier 4");
+assertEqual(tierBundlePlan.length, 3, "multi-tier offer request should produce a three-tier plan");
+assertEqual(tierBundlePlan[0].tier, "Tier 1", "first bundle tier should be Tier 1");
+assertEqual(tierBundlePlan[0].count, 2, "first bundle tier should request 2 offers");
+assertEqual(tierBundlePlan[1].tier, "Tier 3", "second bundle tier should be Tier 3");
+assertEqual(tierBundlePlan[1].count, 3, "second bundle tier should request 3 offers");
+assertEqual(tierBundlePlan[2].tier, "Tier 4", "third bundle tier should be Tier 4");
+assertEqual(tierBundlePlan[2].count, 1, "third bundle tier should request 1 offer");
+
+hooks.answerPrompt("I want 2 offers from tier 1, 3 offers from tier 3, and 1 offer from tier 4");
+let bundle = hooks.currentRecommendationBundle();
+assertTruthy(bundle, "multi-tier recommendation should create an active recommendation bundle");
+assertEqual(bundle.rows.length, 6, "multi-tier recommendation bundle should contain the requested total when available");
+const bundleCounts = bundle.rows.reduce((counts, offer) => {
+  counts[offer.tier] = (counts[offer.tier] || 0) + 1;
+  return counts;
+}, {});
+assertEqual(bundleCounts["Tier 1"], 2, "bundle should contain requested Tier 1 count");
+assertEqual(bundleCounts["Tier 3"], 3, "bundle should contain requested Tier 3 count");
+assertEqual(bundleCounts["Tier 4"], 1, "bundle should contain requested Tier 4 count");
+
+const excludedOffer = bundle.rows.find((offer) => offer.tier === "Tier 3");
+const excludedOfferShortName = excludedOffer.brand.split(/\s+/)[0];
+hooks.answerPrompt(`do not try ${excludedOfferShortName}`);
+bundle = hooks.currentRecommendationBundle();
+assertEqual(bundle.rows.some((offer) => offer.brand === excludedOffer.brand), false, "excluded offer should leave the active recommendation bundle");
+assertEqual(bundle.rows.length, 6, "excluding one offer should refill from the same tier when a replacement exists");
+assertEqual(bundle.rows.filter((offer) => offer.tier === "Tier 3").length, 3, "Tier 3 quota should stay constant after exclusion");
+
+const beforeReplaceTier3 = bundle.rows.filter((offer) => offer.tier === "Tier 3").map((offer) => offer.brand);
+hooks.answerPrompt("change the tier 3 offers recommendation with other one");
+bundle = hooks.currentRecommendationBundle();
+const afterReplaceTier3 = bundle.rows.filter((offer) => offer.tier === "Tier 3").map((offer) => offer.brand);
+const retainedTier3 = beforeReplaceTier3.filter((brand) => afterReplaceTier3.includes(brand)).length;
+assertEqual(afterReplaceTier3.length, 3, "Tier 3 quota should stay constant after a change request");
+assertEqual(retainedTier3, 2, "change tier 3 should replace exactly one current Tier 3 offer");
+
+hooks.answerPrompt("I want 100 offers from tier 1");
+bundle = hooks.currentRecommendationBundle();
+assertEqual(bundle.rows.length, 45, "bundle should return fewer rows when the tier does not have enough candidates");
+assertEqual(bundle.gaps.length, 1, "bundle should report a shortage when candidates are insufficient");
+assertEqual(bundle.gaps[0].tier, "Tier 1", "shortage should identify the tier");
+assertEqual(bundle.gaps[0].gap, 55, "shortage should report the missing count");
+
 const aovAbove = hooks.extractMetricFilters("aov above 100")[0];
 assertEqual(aovAbove.field, "aov", "aov above filter should use AOV");
 assertEqual(aovAbove.operator, ">", "aov above filter should be greater-than");
