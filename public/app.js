@@ -1494,8 +1494,10 @@
     return [
       "greater\\s+than",
       "more\\s+than",
+      "higher\\s+than",
       "at\\s+least",
       "less\\s+than",
+      "lower\\s+than",
       "at\\s+most",
       "不低于",
       "不少于",
@@ -1587,6 +1589,7 @@
 
   function normalizeComparisonOperator(operator) {
     const text = String(operator || "").toLowerCase();
+    if (/lower\s+than/.test(text)) return "<";
     if (/below|under|less|at most|maximum|max|<=|<|低于|少于|小于|以下|以内|不超过|最多|最高|小于等于/.test(text)) {
       return text.includes("=") || /at most|maximum|max|不超过|最多|最高|小于等于|以内/.test(text) ? "<=" : "<";
     }
@@ -1729,8 +1732,89 @@
     return filters && filters.length ? filters.map(metricThresholdText).join(", ") : "";
   }
 
+  function metricSortTermPattern() {
+    return [
+      "highest",
+      "lowest",
+      "top",
+      "best",
+      "maximum",
+      "minimum",
+      "max",
+      "min",
+      "most",
+      "least",
+      "largest",
+      "biggest",
+      "smallest",
+      "desc(?:ending)?",
+      "asc(?:ending)?"
+    ].join("|");
+  }
+
+  function metricSortLeadingPattern() {
+    return new RegExp(`\\b(${metricSortTermPattern()})\\s+(?:by\\s+|for\\s+|of\\s+)?(${metricTermPattern()})`, "gi");
+  }
+
+  function metricSortTrailingPattern() {
+    return new RegExp(`(${metricTermPattern()})\\s+(?:is\\s+|are\\s+)?(${metricSortTermPattern()})\\b`, "gi");
+  }
+
+  function metricSortByPattern() {
+    return new RegExp(`\\b(?:sort(?:ed)?\\s+by|order(?:ed)?\\s+by|rank(?:ed)?\\s+by|based\\s+on|by)\\s+(${metricTermPattern()})(?:\\s+(${metricSortTermPattern()}))?`, "gi");
+  }
+
+  function metricSortPatterns() {
+    return [metricSortLeadingPattern(), metricSortTrailingPattern(), metricSortByPattern()];
+  }
+
+  function normalizeMetricSortDirection(term) {
+    const text = String(term || "").toLowerCase();
+    if (/lowest|minimum|\bmin\b|least|smallest|asc/.test(text)) return "asc";
+    return "desc";
+  }
+
+  function normalizeMetricSortName(metric) {
+    const normalized = normalizeMetricName(metric);
+    const text = String(metric || "").toLowerCase().replace(/\s+/g, " ");
+    if (text.includes("commission") && !/(rate|percentage|percent)/.test(text)) {
+      return { field: "affCommission", label: "Commission made", type: "money" };
+    }
+    return normalized;
+  }
+
+  function extractMetricSortIntent(prompt) {
+    const text = String(prompt || "");
+    const matches = [];
+    let match;
+    const leading = metricSortLeadingPattern();
+    while ((match = leading.exec(text))) {
+      matches.push({ term: match[1], metric: match[2], index: match.index, raw: match[0].trim() });
+    }
+    const trailing = metricSortTrailingPattern();
+    while ((match = trailing.exec(text))) {
+      matches.push({ term: match[2], metric: match[1], index: match.index, raw: match[0].trim() });
+    }
+    const byPattern = metricSortByPattern();
+    while ((match = byPattern.exec(text))) {
+      matches.push({ term: match[2] || "highest", metric: match[1], index: match.index, raw: match[0].trim() });
+    }
+    if (!matches.length) return null;
+    const best = matches.sort((a, b) => a.index - b.index)[0];
+    const metric = normalizeMetricSortName(best.metric);
+    return {
+      ...metric,
+      direction: normalizeMetricSortDirection(best.term),
+      raw: best.raw
+    };
+  }
+
+  function stripMetricSortPhrases(text) {
+    return metricSortPatterns().reduce((output, pattern) => output.replace(pattern, " "), String(text || ""));
+  }
+
   function cleanedCategoryPhrase(text) {
-    return String(text || "")
+    return stripMetricSortPhrases(text)
       .replace(metricRangeFilterPattern(), " ")
       .replace(metricFilterPattern(), " ")
       .replace(metricTrailingComparisonPattern(), " ")
@@ -1836,7 +1920,7 @@
   }
 
   function cleanedMerchantLookupPhrase(text) {
-    return String(text || "")
+    return stripMetricSortPhrases(text)
       .replace(metricRangeFilterPattern(), " ")
       .replace(metricFilterPattern(), " ")
       .replace(metricTrailingComparisonPattern(), " ")
@@ -1857,7 +1941,7 @@
   function hasStrongMerchantLookup(text, category = null) {
     if (category || hasCategoryIntentText(text) || findByAsin(text) || findByMerchantId(text)) return false;
     if (tierFromPrompt(text) || promptHasPaymentTerms(String(text || "").toLowerCase())) return false;
-    if (extractMetricFilters(text).length) return false;
+    if (extractMetricFilters(text).length || extractMetricSortIntent(text)) return false;
     const { cleaned, matches } = merchantLookupForPrompt(text);
     const first = matches[0];
     if (!first) return false;
@@ -1889,11 +1973,13 @@
     const hasRankCommand = /\b(?:recommend|top|give|show|list|export|download|pull)\b/.test(lower) || /推荐|排行|排名|给我|显示|列出|拉取|导出|下载|筛选|前\s*\d+/.test(text);
     const endsLikeOfferRequest = /\b(?:offers?|brands?|recommendations?)\s*$/.test(lower) || /(?:offer|offers|品牌|商家|推荐)\s*$/.test(text);
     const hasMetricFilter = extractMetricFilters(text).length > 0;
-    if (!hasRankCommand && !endsLikeOfferRequest && !hasMetricFilter) return false;
+    const metricSort = extractMetricSortIntent(text);
+    if (!hasRankCommand && !endsLikeOfferRequest && !hasMetricFilter && !metricSort) return false;
     return requestedRecommendationCount(text, 0) > 0 ||
       /\b(?:offers?|brands?|recommendations?)\b/.test(lower) ||
       /offer|offers|品牌|商家|推荐/.test(text) ||
       hasMetricFilter ||
+      Boolean(metricSort) ||
       Boolean(tierFromPrompt(text)) ||
       Boolean(categoryForPrompt(text));
   }
@@ -1904,10 +1990,12 @@
     if (findByMerchantId(userMessage)) return "merchant";
     const zhIntent = chatbotI18n.detectIntent && chatbotI18n.detectIntent(userMessage);
     const category = categoryForPrompt(userMessage);
+    const metricSort = extractMetricSortIntent(userMessage);
     if (zhIntent && zhIntent !== "recommendation" && zhIntent !== "category") return zhIntent;
     if (/payment|paid|unpaid|late|issue|cycle/.test(lower) || /付款|未付款|没付款|未支付|已付款|已支付|逾期|到期|待处理|支付|结算|款项|付款周期|支付周期|结算周期/.test(userMessage)) return "payment";
     if (hasStrongMerchantLookup(userMessage, category)) return "merchant";
     if (zhIntent === "recommendation") return "recommendation";
+    if (metricSort) return "recommendation";
     if (/recommend|push|focus|best|should we/.test(lower) || /推荐|排行|排名|最好|最佳|主推|重点|应该|筛选|前\s*\d+/.test(userMessage) || wantsRecommendationList(userMessage)) return "recommendation";
     if (tierFromPrompt(userMessage)) return "tier";
     if (category || zhIntent === "category") return "category";
@@ -1968,6 +2056,15 @@
   function compareRecommendationOffers(a, b, context = {}) {
     const includeTier4 = context.includeTier4 || false;
     const includeBlack = context.includeBlack || false;
+    const metricSort = context.metricSort;
+    if (metricSort && metricSort.field) {
+      const tierDelta = tierPriority(a, includeTier4, includeBlack) - tierPriority(b, includeTier4, includeBlack);
+      if (tierDelta) return tierDelta;
+      const metricDelta = metricSort.direction === "asc"
+        ? number(a[metricSort.field]) - number(b[metricSort.field])
+        : number(b[metricSort.field]) - number(a[metricSort.field]);
+      if (metricDelta) return metricDelta;
+    }
     return (
       number(b.salesAmount) - number(a.salesAmount) ||
       number(b.orders) - number(a.orders) ||
@@ -2561,6 +2658,18 @@
     return fallback;
   }
 
+  function recommendationPreviewCount(requestedCount, availableCount) {
+    const requested = Math.max(1, Math.floor(number(requestedCount) || 5));
+    const limit = requested <= 10 ? requested : 10;
+    return Math.min(limit, availableCount);
+  }
+
+  function metricSortDescription(metricSort) {
+    if (!metricSort || !metricSort.field) return "";
+    const direction = metricSort.direction === "asc" ? "lowest" : "highest";
+    return `tier priority first, then ${metricSort.label} ${direction}`;
+  }
+
   function recommendationHtml(rows, context = {}) {
     const language = responseLanguageFor(context.prompt || state.currentQuery);
     const copy = chatCopy(language);
@@ -2568,7 +2677,7 @@
     const requestedCount = number(context.requestedCount) || 5;
     const ranked = rankedRecommendations(rows, localizedContext);
     const exportRows = ranked.slice(0, requestedCount);
-    const top = exportRows.slice(0, 5);
+    const top = exportRows.slice(0, recommendationPreviewCount(requestedCount, exportRows.length));
     setContext(buildRecommendationContext(exportRows, { ...localizedContext, requestedCount, exportCount: exportRows.length }));
     if (!top.length) return language === "zh" ? copy.recommendationEmpty : "I found no offers that fit this recommendation request with the current filters.";
     const label = language === "zh"
@@ -2588,9 +2697,13 @@
     const showingText = language === "zh"
       ? chatFormat(copy.showingTop, { count: top.length.toLocaleString() })
       : `showing the top ${top.length.toLocaleString()} here so the chat stays readable.`;
-    const rankingText = language === "zh"
+    let rankingText = language === "zh"
       ? `${exportRows.length.toLocaleString()} 个 offer，${copy.rankedBy}`
       : `${exportRows.length.toLocaleString()} offers ranked by revenue, orders, CVR, AOV, then EPC.${filterNote}`;
+    const metricSortText = metricSortDescription(context.metricSort);
+    if (metricSortText) {
+      rankingText = `${exportRows.length.toLocaleString()} offers ranked by ${metricSortText}.${filterNote}`;
+    }
     return `<p><strong>${escapeHtml(previewTitle)}${label}:</strong> ${escapeHtml(showingText)} ${escapeHtml(exportNote)}</p>` +
       `<div class="download-card">
         <div>
@@ -2788,6 +2901,7 @@
     const wantsRecommendation = intent === "recommendation";
     const wantsGoogle = /google|keyword|brand keyword|search/.test(lower) || /关键词|搜索|品牌词/.test(prompt);
     const metricFilters = extractMetricFilters(prompt);
+    const metricSort = extractMetricSortIntent(prompt);
 
     if (intent === "payment") {
       return paymentAnswer(prompt);
@@ -2797,7 +2911,7 @@
       let pool = category ? sortedForCategory(category, { includeTier4: wantsTier4, includeBlack: wantsBlack, prompt, tier }) : offers;
       if (tier) pool = pool.filter((offer) => offer.tier === tier);
       pool = applyMetricFilters(pool, metricFilters);
-      return recommendationHtml(pool, { category, tier, google: wantsGoogle, includeTier4: wantsTier4, includeBlack: wantsBlack, metricFilters, requestedCount: requestedRecommendationCount(prompt), prompt });
+      return recommendationHtml(pool, { category, tier, google: wantsGoogle, includeTier4: wantsTier4, includeBlack: wantsBlack, metricFilters, metricSort, requestedCount: requestedRecommendationCount(prompt), prompt });
     }
 
     if (tier) {
@@ -3894,7 +4008,11 @@
       categoryForPrompt,
       detectQueryIntent,
       cleanedMerchantLookupPhrase,
-      hasStrongMerchantLookup
+      hasStrongMerchantLookup,
+      extractMetricFilters,
+      extractMetricSortIntent,
+      requestedRecommendationCount,
+      rankedRecommendations
     };
   } else {
     init();
