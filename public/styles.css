@@ -1377,6 +1377,23 @@ p {
   border-bottom: 1px solid var(--line);
 }
 
+.table-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.table-expand-button,
+.table-close-button {
+  min-width: 72px;
+}
+
+.table-close-button {
+  background: #f7fafb;
+}
+
 .sort-group {
   display: flex;
   gap: 6px;
@@ -1399,6 +1416,74 @@ p {
 .table-wrap {
   max-height: 430px;
   overflow: auto;
+}
+
+.sheet-expanded-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 38;
+  background: rgba(25, 35, 43, 0.44);
+  backdrop-filter: blur(5px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+body.sheet-expanded-open {
+  overflow: hidden;
+}
+
+body.sheet-expanded-open .sheet-expanded-backdrop {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tier-table-panel {
+  transition: box-shadow 180ms ease, transform 180ms ease;
+}
+
+.tier-table-panel.sheet-expanded-panel {
+  position: fixed;
+  inset: 16px;
+  z-index: 39;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--panel);
+  border-color: rgba(94, 111, 122, 0.42);
+  border-radius: 10px;
+  box-shadow: 0 24px 64px rgba(25, 35, 43, 0.28);
+  animation: tierSheetExpandIn 180ms ease both;
+}
+
+.tier-table-panel.sheet-expanded-panel .table-toolbar {
+  position: relative;
+  z-index: 3;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
+}
+
+.tier-table-panel.sheet-expanded-panel .table-wrap,
+.tier-table-panel.sheet-expanded-panel .sheet-table-wrap {
+  max-height: none;
+  min-height: 0;
+  height: 100%;
+  overscroll-behavior: contain;
+}
+
+.tier-table-panel.sheet-expanded-panel .sheet-table {
+  min-width: 2100px;
+}
+
+@keyframes tierSheetExpandIn {
+  from {
+    opacity: 0.94;
+    transform: translateY(8px) scale(0.99);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 table {
@@ -1721,6 +1806,20 @@ td strong {
   .table-toolbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .table-toolbar-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .tier-table-panel.sheet-expanded-panel {
+    inset: 8px;
+    border-radius: 8px;
+  }
+
+  .tier-table-panel.sheet-expanded-panel .table-toolbar-actions {
+    justify-content: space-between;
   }
 
   .quick-actions {

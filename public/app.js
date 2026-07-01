@@ -22,6 +22,7 @@
   const AUTO_PAYMENT_SYNC_INTERVAL_MS = 60 * 60 * 1000;
   const STANDARD_CATEGORY_REPORT_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"];
   const CATEGORY_REPORT_TIER_OPTIONS = [...STANDARD_CATEGORY_REPORT_TIERS, "BLACK TIER"];
+  const TIER_SHEET_EXPANDABLE_TIERS = new Set(STANDARD_CATEGORY_REPORT_TIERS);
   const CATEGORY_REPORT_ADDITIVE_SORTS = new Set(["merchantCount", "revenue", "orders", "clicks"]);
   const PAYMENT_TODAY = new Date(`${localDateKey(new Date())}T00:00:00`);
   let paymentRecords = withPendingPaymentPlaceholders((data.paymentRecords || []).map(normalizePaymentRecord));
@@ -58,6 +59,7 @@
       overdueOnly: false
     },
     selectedTierPage: "Tier 1",
+    expandedTierSheet: false,
     tierSheetFilters: {
       search: "",
       network: "all",
@@ -138,6 +140,10 @@
     tierCategorySummary: document.getElementById("tierCategorySummary"),
     tierTableTitle: document.getElementById("tierTableTitle"),
     tierTableCount: document.getElementById("tierTableCount"),
+    tierTablePanel: document.getElementById("tierTablePanel"),
+    tierExpand: document.getElementById("expandTierSheet"),
+    tierOverlayClose: document.getElementById("closeTierSheetOverlay"),
+    sheetExpandedBackdrop: document.getElementById("sheetExpandedBackdrop"),
     tierSheetHead: document.getElementById("tierSheetHead"),
     tierSheetRows: document.getElementById("tierSheetRows"),
     tierSheetSearch: document.getElementById("tierSheetSearch"),
@@ -4494,6 +4500,56 @@
     renderSheetTable(sheet, els.tierTableTitle, els.tierTableCount, els.tierSheetHead, els.tierSheetRows, getFilteredTierSheetRows(sheet));
   }
 
+  function canExpandTierSheet(tierName = state.selectedTierPage) {
+    return TIER_SHEET_EXPANDABLE_TIERS.has(tierName);
+  }
+
+  function syncTierSheetOverlay() {
+    const open = Boolean(state.expandedTierSheet) && canExpandTierSheet() && state.page === "tier";
+    if (state.expandedTierSheet && !open) state.expandedTierSheet = false;
+    document.body.classList.toggle("sheet-expanded-open", open);
+    if (els.sheetExpandedBackdrop) {
+      els.sheetExpandedBackdrop.setAttribute("aria-hidden", open ? "false" : "true");
+    }
+    if (els.tierTablePanel) {
+      els.tierTablePanel.classList.toggle("sheet-expanded-panel", open);
+      if (open) {
+        els.tierTablePanel.setAttribute("role", "dialog");
+        els.tierTablePanel.setAttribute("aria-modal", "true");
+      } else {
+        els.tierTablePanel.removeAttribute("role");
+        els.tierTablePanel.removeAttribute("aria-modal");
+      }
+    }
+    const available = canExpandTierSheet() && state.page === "tier";
+    if (els.tierExpand) {
+      els.tierExpand.classList.toggle("hidden", !available || open);
+      els.tierExpand.disabled = !available;
+      els.tierExpand.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    if (els.tierOverlayClose) {
+      els.tierOverlayClose.classList.toggle("hidden", !open);
+    }
+  }
+
+  function openTierSheetOverlay() {
+    if (!canExpandTierSheet()) return;
+    state.expandedTierSheet = true;
+    syncTierSheetOverlay();
+    window.requestAnimationFrame(() => {
+      if (els.tierOverlayClose) els.tierOverlayClose.focus();
+    });
+  }
+
+  function closeTierSheetOverlay({ restoreFocus = true } = {}) {
+    const wasOpen = Boolean(state.expandedTierSheet);
+    state.expandedTierSheet = false;
+    syncTierSheetOverlay();
+    if (restoreFocus && wasOpen && els.tierExpand && !els.tierExpand.classList.contains("hidden")) {
+      els.tierExpand.focus();
+    }
+  }
+
   function sheetRowUniqueValues(rows, keys) {
     return Array.from(new Set(rows.map((row) => String(rowValue(row, keys) || "").trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
   }
@@ -4739,6 +4795,8 @@
       els.tierSheetHead.innerHTML = "";
       els.tierSheetRows.innerHTML = "";
       els.tierTableCount.textContent = "";
+      closeTierSheetOverlay({ restoreFocus: false });
+      syncTierSheetOverlay();
       return;
     }
     refreshTierSheetFilters(sheet);
@@ -4747,6 +4805,7 @@
     const filteredRows = getFilteredTierSheetRows(sheet);
     renderTierCategorySummary(sheet, filteredRows);
     renderSheetTable(sheet, els.tierTableTitle, els.tierTableCount, els.tierSheetHead, els.tierSheetRows, filteredRows);
+    syncTierSheetOverlay();
   }
 
   function targetRecords() {
@@ -4851,6 +4910,7 @@
 
   function switchPage(page) {
     state.page = page;
+    if (page !== "tier") closeTierSheetOverlay({ restoreFocus: false });
     const isTier = page === "tier";
     const isSheets = page === "sheets";
     document.querySelectorAll(".dashboard-page").forEach((el) => el.classList.toggle("hidden", page !== "dashboard"));
@@ -4930,6 +4990,12 @@
     els.tierSheetMinRevenue.addEventListener("input", () => { state.tierSheetFilters.minRevenue = els.tierSheetMinRevenue.value; renderTierPage(state.selectedTierPage); });
     els.sheetGridHead.addEventListener("click", handleReportSortClick);
     els.tierSheetHead.addEventListener("click", handleReportSortClick);
+    els.tierExpand.addEventListener("click", openTierSheetOverlay);
+    els.tierOverlayClose.addEventListener("click", () => closeTierSheetOverlay());
+    els.sheetExpandedBackdrop.addEventListener("click", () => closeTierSheetOverlay());
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && state.expandedTierSheet) closeTierSheetOverlay();
+    });
     els.paymentMonth.addEventListener("change", () => { state.payments.month = els.paymentMonth.value; renderPaymentsPage(); });
     els.paymentNetwork.addEventListener("change", () => { state.payments.network = els.paymentNetwork.value; renderPaymentsPage(); });
     els.paymentTier.addEventListener("change", () => { state.payments.tier = els.paymentTier.value; renderPaymentsPage(); });
