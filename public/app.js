@@ -22,6 +22,7 @@
   const AUTO_PAYMENT_SYNC_INTERVAL_MS = 60 * 60 * 1000;
   const STANDARD_CATEGORY_REPORT_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"];
   const CATEGORY_REPORT_TIER_OPTIONS = [...STANDARD_CATEGORY_REPORT_TIERS, "BLACK TIER"];
+  const CATEGORY_REPORT_ADDITIVE_SORTS = new Set(["merchantCount", "revenue", "orders", "clicks"]);
   const PAYMENT_TODAY = new Date(`${localDateKey(new Date())}T00:00:00`);
   let paymentRecords = withPendingPaymentPlaceholders((data.paymentRecords || []).map(normalizePaymentRecord));
   const paymentRecordsByMerchant = new Map();
@@ -39,6 +40,9 @@
     sort: "epc",
     descending: true,
     categoryReportTiers: STANDARD_CATEGORY_REPORT_TIERS.slice(),
+    categoryReportSearch: "",
+    categoryReportSort: "revenue",
+    categoryReportDirection: "desc",
     lastOffer: null,
     lastRows: [],
     currentQuery: "",
@@ -99,6 +103,7 @@
     dashboardCategoryTierPicker: document.getElementById("dashboardCategoryTierPicker"),
     dashboardCategoryReportSubtitle: document.getElementById("dashboardCategoryReportSubtitle"),
     dashboardCategoryReportBody: document.getElementById("dashboardCategoryReportBody"),
+    dashboardCategorySearch: document.getElementById("dashboardCategorySearch"),
     table: document.getElementById("offerRows"),
     tableCount: document.getElementById("tableCount"),
     chatLog: document.getElementById("chatLog"),
@@ -3417,6 +3422,7 @@
   }
 
   function renderTable(rows) {
+    if (!els.table || !els.tableCount) return;
     const groups = dashboardCategoryGroups(rows);
     const previewLimit = dashboardOfferPreviewLimit();
     els.tableCount.textContent = `${rows.length.toLocaleString()} ${t("table.offerCount", "matching offers")} across ${groups.length.toLocaleString()} main categories`;
@@ -3519,24 +3525,170 @@
       .join(" / ") || "-";
   }
 
+  function dashboardCategorySortLabel(key) {
+    const labels = {
+      merchantCount: "Merchants",
+      revenue: "Revenue",
+      orders: "Orders",
+      clicks: "Clicks",
+      avgCvr: "CVR",
+      avgEpc: "EPC",
+      avgAov: "AOV",
+      category: "Category"
+    };
+    return labels[key] || "Revenue";
+  }
+
+  function dashboardCategoryDefaultSortDirection(key) {
+    return key === "category" ? "asc" : "desc";
+  }
+
+  function dashboardCategorySortableHeader(key, label) {
+    const active = state.categoryReportSort === key;
+    const direction = active ? state.categoryReportDirection : dashboardCategoryDefaultSortDirection(key);
+    const indicator = active ? (direction === "asc" ? "↑" : "↓") : "↕";
+    return `<th><button class="table-sort-button${active ? " active" : ""}" type="button" data-dashboard-category-sort-key="${escapeHtml(key)}" aria-label="Sort category report by ${escapeHtml(label)}">
+      <span>${escapeHtml(label)}</span>
+      <span class="sort-indicator" aria-hidden="true">${escapeHtml(indicator)}</span>
+    </button></th>`;
+  }
+
+  function handleDashboardCategorySortClick(event) {
+    const button = event.target.closest("[data-dashboard-category-sort-key]");
+    if (!button) return;
+    const key = button.dataset.dashboardCategorySortKey || "revenue";
+    if (state.categoryReportSort === key) {
+      state.categoryReportDirection = state.categoryReportDirection === "asc" ? "desc" : "asc";
+    } else {
+      state.categoryReportSort = key;
+      state.categoryReportDirection = dashboardCategoryDefaultSortDirection(key);
+    }
+    renderDashboardCategoryReport();
+  }
+
+  function dashboardCategorySortValue(group, key) {
+    if (key === "category") return String(group.category || "");
+    if (key === "merchantCount") return number(group.merchantCount);
+    if (key === "revenue") return number(group.revenue);
+    if (key === "orders") return number(group.orders);
+    if (key === "clicks") return number(group.clicks);
+    if (key === "avgCvr") return number(group.avgCvr);
+    if (key === "avgEpc") return number(group.avgEpc);
+    if (key === "avgAov") return number(group.avgAov);
+    return number(group.revenue);
+  }
+
+  function compareDashboardCategoryReportGroups(a, b) {
+    const key = state.categoryReportSort || "revenue";
+    const direction = state.categoryReportDirection === "asc" ? 1 : -1;
+    const left = dashboardCategorySortValue(a, key);
+    const right = dashboardCategorySortValue(b, key);
+    if (key === "category") {
+      const result = String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: "base" });
+      return result * (state.categoryReportDirection === "desc" ? -1 : 1);
+    }
+    const result = number(left) - number(right);
+    if (result) return result * direction;
+    if (a.category === "Uncategorized" && b.category !== "Uncategorized") return 1;
+    if (b.category === "Uncategorized" && a.category !== "Uncategorized") return -1;
+    return String(a.category || "").localeCompare(String(b.category || ""), undefined, { numeric: true, sensitivity: "base" });
+  }
+
+  function filterDashboardCategoryReportGroups(groups) {
+    const search = normalize(state.categoryReportSearch);
+    const filtered = search
+      ? groups.filter((group) => {
+        const category = normalize(group.category);
+        const merchants = normalize(`${group.previewMerchants || ""} ${group.topMerchant || ""} ${(group.rows || []).slice(0, 24).map((row) => `${tierRowMerchantName(row)} ${tierRowMerchantId(row)}`).join(" ")}`);
+        return category.includes(search) || merchants.includes(search);
+      })
+      : groups.slice();
+    return filtered.sort(compareDashboardCategoryReportGroups);
+  }
+
   function dashboardCategoryReportTableRows(groups) {
-    return groups.map((group) => `<tr>
-      <td><strong>${escapeHtml(group.category)}</strong></td>
+    const maxRevenue = Math.max(...groups.map((group) => number(group.revenue)), 0);
+    return groups.map((group) => {
+      const revenuePct = maxRevenue ? Math.max(4, Math.round((number(group.revenue) / maxRevenue) * 100)) : 0;
+      return `<tr>
+      <td>
+        <strong>${escapeHtml(group.category)}</strong>
+        <span class="category-rank-bar" aria-hidden="true"><span style="width: ${revenuePct}%"></span></span>
+      </td>
       <td>${number(group.merchantCount).toLocaleString()}</td>
       <td>${shortMoney(group.revenue)}</td>
       <td>${number(group.orders).toLocaleString()}</td>
+      <td>${number(group.clicks).toLocaleString()}</td>
       <td>${shortPct(group.avgCvr)}</td>
       <td>${shortEpc(group.avgEpc)}</td>
       <td>${shortMoney(group.avgAov)}</td>
       <td>${escapeHtml(group.previewMerchants || group.topMerchant || "-")}</td>
       <td>${escapeHtml(tierBreakdownText(group))}</td>
-    </tr>`).join("");
+    </tr>`;
+    }).join("");
+  }
+
+  function dashboardCategoryPieMetricKey() {
+    const key = state.categoryReportSort || "revenue";
+    return CATEGORY_REPORT_ADDITIVE_SORTS.has(key) ? key : "revenue";
+  }
+
+  function dashboardCategoryPieHtml(groups) {
+    const metricKey = dashboardCategoryPieMetricKey();
+    const metricLabel = dashboardCategorySortLabel(metricKey);
+    const colors = ["#2f5f9f", "#177b73", "#c27a2c", "#6b7f2a", "#8a5a8c", "#5b7f8e", "#b04f4f", "#7a6b56"];
+    const slices = groups
+      .map((group) => ({
+        label: group.category,
+        value: number(dashboardCategorySortValue(group, metricKey))
+      }))
+      .filter((slice) => slice.value > 0);
+    const total = slices.reduce((sum, slice) => sum + slice.value, 0);
+    if (!total) {
+      return `<section class="dashboard-category-pie" aria-label="Category pie chart">
+        <div class="category-pie-empty">No ${escapeHtml(metricLabel.toLowerCase())} data for the selected tiers.</div>
+      </section>`;
+    }
+
+    const topSlices = slices.slice(0, 7);
+    const otherValue = slices.slice(7).reduce((sum, slice) => sum + slice.value, 0);
+    if (otherValue > 0) topSlices.push({ label: "Other categories", value: otherValue });
+    let current = 0;
+    const gradient = topSlices.map((slice, index) => {
+      const start = current;
+      current += (slice.value / total) * 360;
+      return `${colors[index % colors.length]} ${start.toFixed(2)}deg ${current.toFixed(2)}deg`;
+    }).join(", ");
+    return `<section class="dashboard-category-pie" aria-label="Category pie chart">
+      <div class="category-pie-visual" style="background: conic-gradient(${gradient});">
+        <div>
+          <strong>${escapeHtml(metricLabel)}</strong>
+          <span>${escapeHtml(metricKey === "revenue" ? shortMoney(total) : total.toLocaleString())}</span>
+        </div>
+      </div>
+      <div class="category-pie-copy">
+        <h4>${escapeHtml(metricLabel)} mix by category</h4>
+        <p>Top categories from the current tier selection. Search and tier checkboxes update this chart.</p>
+        <ul class="category-pie-legend">
+          ${topSlices.map((slice, index) => {
+            const pct = total ? slice.value / total : 0;
+            const value = metricKey === "revenue" ? shortMoney(slice.value) : slice.value.toLocaleString();
+            return `<li>
+              <span class="category-pie-swatch" style="background: ${colors[index % colors.length]}"></span>
+              <strong>${escapeHtml(slice.label)}</strong>
+              <span>${escapeHtml(value)} / ${shortPct(pct)}</span>
+            </li>`;
+          }).join("")}
+        </ul>
+      </div>
+    </section>`;
   }
 
   function renderDashboardCategoryReport() {
     if (!els.dashboardCategoryReportBody) return;
     const rows = dashboardCategoryReportRows();
-    const groups = tierCategorySummaryRows(null, rows);
+    const allGroups = tierCategorySummaryRows(null, rows);
+    const groups = filterDashboardCategoryReportGroups(allGroups);
     const totalRevenue = groups.reduce((sum, group) => sum + number(group.revenue), 0);
     const totalOrders = groups.reduce((sum, group) => sum + number(group.orders), 0);
     const totalClicks = groups.reduce((sum, group) => sum + number(group.clicks), 0);
@@ -3544,8 +3696,9 @@
     const selectedTiers = normalizeCategoryReportTiers(state.categoryReportTiers).map(categoryReportTierLabel);
     if (els.dashboardCategoryReportSubtitle) {
       const tierText = selectedTiers.length ? selectedTiers.join(", ") : "No tiers selected";
-      els.dashboardCategoryReportSubtitle.textContent = `${tierText} / ${rows.length.toLocaleString()} rows / ${groups.length.toLocaleString()} categories`;
+      els.dashboardCategoryReportSubtitle.textContent = `${tierText} / ${rows.length.toLocaleString()} rows / ${groups.length.toLocaleString()} of ${allGroups.length.toLocaleString()} categories`;
     }
+    if (els.dashboardCategorySearch) els.dashboardCategorySearch.value = state.categoryReportSearch;
     els.dashboardCategoryReportBody.innerHTML = `<dl class="dashboard-category-report-totals">
       <div><dt>${escapeHtml(labelText("Merchants"))}</dt><dd>${merchantCount.toLocaleString()}</dd></div>
       <div><dt>${escapeHtml(labelText("Revenue"))}</dt><dd>${shortMoney(totalRevenue)}</dd></div>
@@ -3556,27 +3709,28 @@
       <table class="sheet-table tier-category-table dashboard-category-report-table">
         <thead>
           <tr>
-            <th>${escapeHtml(labelText("Category"))}</th>
-            <th>${escapeHtml(labelText("Merchants"))}</th>
-            <th>${escapeHtml(labelText("Revenue"))}</th>
-            <th>${escapeHtml(labelText("Orders"))}</th>
-            <th>${escapeHtml(labelText("CVR"))}</th>
-            <th>EPC</th>
-            <th>AOV</th>
+            ${dashboardCategorySortableHeader("category", labelText("Category"))}
+            ${dashboardCategorySortableHeader("merchantCount", labelText("Merchants"))}
+            ${dashboardCategorySortableHeader("revenue", labelText("Revenue"))}
+            ${dashboardCategorySortableHeader("orders", labelText("Orders"))}
+            ${dashboardCategorySortableHeader("clicks", labelText("Clicks"))}
+            ${dashboardCategorySortableHeader("avgCvr", labelText("CVR"))}
+            ${dashboardCategorySortableHeader("avgEpc", "EPC")}
+            ${dashboardCategorySortableHeader("avgAov", "AOV")}
             <th>Top merchants</th>
             <th>Tier mix</th>
           </tr>
         </thead>
-        <tbody>${groups.length ? dashboardCategoryReportTableRows(groups) : `<tr><td colspan="9">No category rows match the selected tiers.</td></tr>`}</tbody>
+        <tbody>${groups.length ? dashboardCategoryReportTableRows(groups) : `<tr><td colspan="10">No category rows match the selected tiers or category search.</td></tr>`}</tbody>
       </table>
-    </div>`;
+    </div>
+    ${dashboardCategoryPieHtml(groups)}`;
     syncDashboardCategoryTierControls();
   }
 
   function renderAll(rows = getFiltered()) {
     renderMetrics(rows);
     renderDashboardCategoryReport();
-    renderTable(rows);
     if (state.currentContext.type === "default") {
       setContext({ type: "default", items: rows.slice(0, 120), summary: aggregateRows(rows), filters: {} });
     }
@@ -4747,6 +4901,11 @@
     els.minCvr.addEventListener("input", () => { state.minCvr = els.minCvr.value; renderAll(); });
     els.notPaidOnly.addEventListener("change", () => { state.notPaidOnly = els.notPaidOnly.checked; renderAll(); });
     els.dashboardCategoryTierPicker.addEventListener("change", handleDashboardCategoryTierChange);
+    els.dashboardCategorySearch.addEventListener("input", () => {
+      state.categoryReportSearch = els.dashboardCategorySearch.value;
+      renderDashboardCategoryReport();
+    });
+    els.dashboardCategoryReportBody.addEventListener("click", handleDashboardCategorySortClick);
     els.dashboardNav.addEventListener("click", () => switchPage("dashboard"));
     els.paymentsNav.addEventListener("click", () => switchPage("payments"));
     els.sheetsNav.addEventListener("click", () => switchPage("sheets"));

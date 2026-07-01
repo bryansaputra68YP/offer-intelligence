@@ -69,17 +69,6 @@
 
         <section class="metrics dashboard-page" id="metrics"></section>
 
-        <section class="panel dashboard-category-report dashboard-page" id="dashboardCategoryReport" aria-label="Dashboard category-wise report">
-          <div class="tier-category-header dashboard-category-report-header">
-            <div>
-              <h3>Category-wise report</h3>
-              <p id="dashboardCategoryReportSubtitle"></p>
-            </div>
-            <div class="dashboard-category-tier-picker" id="dashboardCategoryTierPicker" aria-label="Category report tier selection"></div>
-          </div>
-          <div id="dashboardCategoryReportBody"></div>
-        </section>
-
         <section class="panel filters dashboard-filters dashboard-page" aria-label="Dashboard filters">
           <div class="panel-title">
             <span data-i18n="filters.dashboard">Dashboard Filters</span>
@@ -148,37 +137,21 @@
           </section>
         </section>
 
-        <section class="table-panel dashboard-page" aria-label="Offer table">
-          <div class="table-toolbar">
+        <section class="panel table-panel dashboard-category-report dashboard-page" id="dashboardCategoryReport" aria-label="Dashboard category-wise report">
+          <div class="tier-category-header dashboard-category-report-header">
             <div>
-              <h3 data-i18n="table.offers">Offers</h3>
-              <p id="tableCount"></p>
+              <h3>Category-wise report</h3>
+              <p id="dashboardCategoryReportSubtitle"></p>
             </div>
-            <div class="sort-group">
-              <button class="sort-button active" data-sort="epc" type="button">EPC</button>
-              <button class="sort-button" data-sort="conversionRate" type="button">CVR</button>
-              <button class="sort-button" data-sort="aov" type="button">AOV</button>
-              <button class="sort-button" data-sort="salesAmount" type="button">Sales</button>
-            </div>
+            <div class="dashboard-category-tier-picker" id="dashboardCategoryTierPicker" aria-label="Category report tier selection"></div>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th data-i18n="label.Brand">Brand</th>
-                  <th data-i18n="label.Tier">Tier</th>
-                  <th data-i18n="label.Network">Network</th>
-                  <th data-i18n="label.Category">Category</th>
-                  <th>EPC</th>
-                  <th>AOV</th>
-                  <th>CVR</th>
-                  <th data-i18n="label.Orders">Orders</th>
-                  <th data-i18n="label.Payment">Payment</th>
-                </tr>
-              </thead>
-              <tbody id="offerRows"></tbody>
-            </table>
+          <div class="dashboard-category-controls" aria-label="Category report controls">
+            <label>
+              <span>Category</span>
+              <input id="dashboardCategorySearch" type="search" placeholder="Search category or merchant" />
+            </label>
           </div>
+          <div id="dashboardCategoryReportBody"></div>
         </section>
 
         <section class="payments-page hidden" id="paymentsPage" aria-label="Payments">
