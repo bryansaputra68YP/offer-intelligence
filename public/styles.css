@@ -1386,12 +1386,31 @@ p {
 }
 
 .table-expand-button,
-.table-close-button {
+.table-close-button,
+.table-move-button,
+.table-reset-moves-button {
   min-width: 72px;
+}
+
+.table-move-button {
+  min-width: 112px;
+}
+
+.table-move-button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .table-close-button {
   background: #f7fafb;
+}
+
+.tier-move-inline-status {
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 18px;
 }
 
 .sort-group {
@@ -1472,6 +1491,144 @@ body.sheet-expanded-open .sheet-expanded-backdrop {
 
 .tier-table-panel.sheet-expanded-panel .sheet-table {
   min-width: 2100px;
+}
+
+.tier-table-panel .tier-select-cell {
+  left: 0;
+  min-width: 44px;
+  padding: 0 10px;
+  text-align: center;
+  width: 44px;
+}
+
+.tier-table-panel th.tier-select-cell {
+  z-index: 2;
+}
+
+.tier-row-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--teal);
+  cursor: pointer;
+}
+
+.tier-move-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(25, 35, 43, 0.42);
+  backdrop-filter: blur(6px);
+}
+
+body.tier-move-open {
+  overflow: hidden;
+}
+
+.tier-move-card {
+  width: min(620px, 100%);
+  max-height: min(720px, calc(100dvh - 36px));
+  display: grid;
+  gap: 14px;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid rgba(94, 111, 122, 0.35);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 24px 64px rgba(25, 35, 43, 0.28);
+  animation: tierSheetExpandIn 180ms ease both;
+}
+
+.tier-move-header,
+.tier-move-footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tier-move-header h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.tier-move-header p,
+.tier-move-status {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tier-move-targets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.tier-move-target {
+  display: grid;
+  gap: 4px;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfc;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.tier-move-target:hover {
+  border-color: #b8c4ca;
+  background: #f7fafb;
+}
+
+.tier-move-target:active {
+  transform: translateY(1px);
+}
+
+.tier-move-target.active {
+  border-color: var(--teal);
+  background: rgba(23, 123, 115, 0.08);
+  box-shadow: 0 0 0 3px rgba(23, 123, 115, 0.12);
+}
+
+.tier-move-target:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.tier-move-target span {
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.tier-move-target small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.tier-move-footer {
+  justify-content: flex-end;
+}
+
+.tier-move-confirm {
+  border-color: var(--teal);
+  background: var(--teal);
+  color: #fff;
+}
+
+.tier-move-confirm:disabled {
+  border-color: var(--line);
+  background: #eef2f4;
+  color: var(--muted);
+  cursor: not-allowed;
 }
 
 @keyframes tierSheetExpandIn {
@@ -1820,6 +1977,24 @@ td strong {
 
   .tier-table-panel.sheet-expanded-panel .table-toolbar-actions {
     justify-content: space-between;
+  }
+
+  .tier-move-inline-status {
+    width: 100%;
+  }
+
+  .tier-move-card {
+    padding: 14px;
+  }
+
+  .tier-move-header,
+  .tier-move-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tier-move-targets {
+    grid-template-columns: 1fr;
   }
 
   .quick-actions {

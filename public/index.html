@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Offer Intelligence Chat</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./styles.css?v=20260701-tier-overlay1" />
+    <link rel="stylesheet" href="./styles.css?v=20260701-tier-bulk-move1" />
   </head>
   <body>
     <div class="app-shell">
@@ -322,9 +322,12 @@
                 <p id="tierTableCount"></p>
               </div>
               <div class="table-toolbar-actions">
+                <button class="icon-button table-move-button" id="moveTierRows" type="button" disabled>Move selected</button>
+                <button class="icon-button table-reset-moves-button hidden" id="resetTierMoves" type="button">Reset moves</button>
                 <button class="icon-button table-expand-button" id="expandTierSheet" type="button" aria-label="Expand tier records table" aria-expanded="false">Expand</button>
                 <button class="icon-button table-close-button hidden" id="closeTierSheetOverlay" type="button" aria-label="Close expanded tier records table">Close</button>
                 <button class="icon-button table-download-button" id="downloadTierXlsx" type="button" aria-label="Download tier records as Excel">XLSX</button>
+                <span class="tier-move-inline-status" id="tierMoveInlineStatus" aria-live="polite"></span>
               </div>
             </div>
             <div class="table-wrap sheet-table-wrap">
@@ -338,11 +341,28 @@
       </main>
     </div>
     <div class="sheet-expanded-backdrop" id="sheetExpandedBackdrop" aria-hidden="true"></div>
+    <div class="tier-move-dialog hidden" id="tierMoveDialog" role="dialog" aria-modal="true" aria-labelledby="tierMoveTitle">
+      <div class="tier-move-card">
+        <div class="tier-move-header">
+          <div>
+            <h3 id="tierMoveTitle">Move selected merchants</h3>
+            <p id="tierMoveSummary"></p>
+          </div>
+          <button class="icon-button tier-move-close" id="closeTierMoveDialog" type="button" aria-label="Close tier move dialog">Close</button>
+        </div>
+        <div class="tier-move-targets" id="tierMoveTargets" aria-label="Move target tier"></div>
+        <p class="tier-move-status" id="tierMoveStatus"></p>
+        <div class="tier-move-footer">
+          <button class="secondary-button" id="cancelTierMove" type="button">Cancel</button>
+          <button class="secondary-button tier-move-confirm" id="confirmTierMove" type="button">Move merchants</button>
+        </div>
+      </div>
+    </div>
 
     <script src="./sheet_report_data.js?v=20260630-tier-refresh1"></script>
     <script src="./chatbot_data.js?v=20260630-tier-refresh1"></script>
     <script src="./chatbot_i18n.js?v=20260626-zh1"></script>
     <script src="./tier2_recommendation_rules.js?v=20260626-tier2pub1"></script>
-    <script src="./app.js?v=20260701-tier-overlay1"></script>
+    <script src="./app.js?v=20260701-tier-bulk-move1"></script>
   </body>
 </html>

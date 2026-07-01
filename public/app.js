@@ -6,7 +6,9 @@
   const tier2Rules = window.TIER2_RECOMMENDATION_RULES || {};
   const offersByMerchantId = new Map();
   const offerGroupsByMerchantId = new Map();
-  offers.forEach((offer) => {
+  const originalOfferTiers = [];
+  offers.forEach((offer, index) => {
+    originalOfferTiers[index] = offer.tier || "";
     const merchantId = String(offer.merchantId || "").trim();
     if (merchantId) {
       if (!offersByMerchantId.has(merchantId)) offersByMerchantId.set(merchantId, offer);
@@ -23,8 +25,12 @@
   const STANDARD_CATEGORY_REPORT_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"];
   const CATEGORY_REPORT_TIER_OPTIONS = [...STANDARD_CATEGORY_REPORT_TIERS, "BLACK TIER"];
   const TIER_SHEET_EXPANDABLE_TIERS = new Set(STANDARD_CATEGORY_REPORT_TIERS);
+  const TIER_SHEET_MOVE_TARGETS = CATEGORY_REPORT_TIER_OPTIONS.slice();
+  const TIER_SHEET_MOVE_STORAGE_KEY = "offerTierSheetManualMoves.v1";
   const CATEGORY_REPORT_ADDITIVE_SORTS = new Set(["merchantCount", "revenue", "orders", "clicks"]);
   const PAYMENT_TODAY = new Date(`${localDateKey(new Date())}T00:00:00`);
+  const originalTierSheetRows = new Map();
+  const originalTierSheetRowIndex = new Map();
   let paymentRecords = withPendingPaymentPlaceholders((data.paymentRecords || []).map(normalizePaymentRecord));
   const paymentRecordsByMerchant = new Map();
   rebuildPaymentIndex();
@@ -60,6 +66,11 @@
     },
     selectedTierPage: "Tier 1",
     expandedTierSheet: false,
+    selectedTierRowKeys: new Set(),
+    visibleTierRowKeys: [],
+    manualTierMoves: loadManualTierMoves(),
+    tierMoveTarget: "",
+    tierMoveStatus: "",
     tierSheetFilters: {
       search: "",
       network: "all",
@@ -143,6 +154,16 @@
     tierTablePanel: document.getElementById("tierTablePanel"),
     tierExpand: document.getElementById("expandTierSheet"),
     tierOverlayClose: document.getElementById("closeTierSheetOverlay"),
+    tierMoveSelected: document.getElementById("moveTierRows"),
+    tierResetMoves: document.getElementById("resetTierMoves"),
+    tierMoveDialog: document.getElementById("tierMoveDialog"),
+    tierMoveSummary: document.getElementById("tierMoveSummary"),
+    tierMoveTargets: document.getElementById("tierMoveTargets"),
+    tierMoveConfirm: document.getElementById("confirmTierMove"),
+    tierMoveCancel: document.getElementById("cancelTierMove"),
+    tierMoveClose: document.getElementById("closeTierMoveDialog"),
+    tierMoveStatus: document.getElementById("tierMoveStatus"),
+    tierMoveInlineStatus: document.getElementById("tierMoveInlineStatus"),
     sheetExpandedBackdrop: document.getElementById("sheetExpandedBackdrop"),
     tierSheetHead: document.getElementById("tierSheetHead"),
     tierSheetRows: document.getElementById("tierSheetRows"),
@@ -4320,6 +4341,155 @@
     return (sheetReport.sheets || []).find((sheet) => sheet.name === name) || null;
   }
 
+  function storageApi() {
+    try {
+      if (window.localStorage) return window.localStorage;
+      if (typeof localStorage !== "undefined") return localStorage;
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function isTierMoveTarget(tierName) {
+    return TIER_SHEET_MOVE_TARGETS.includes(tierName);
+  }
+
+  function isTierDataSheet(sheet) {
+    return Boolean(sheet && isTierMoveTarget(sheet.name) && Array.isArray(sheet.rows));
+  }
+
+  function loadManualTierMoves() {
+    const storage = storageApi();
+    if (!storage) return {};
+    try {
+      const parsed = JSON.parse(storage.getItem(TIER_SHEET_MOVE_STORAGE_KEY) || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return Object.entries(parsed).reduce((moves, [key, record]) => {
+        if (!record || typeof record !== "object") return moves;
+        const sourceTier = String(record.sourceTier || "");
+        const targetTier = String(record.targetTier || "");
+        if (!key || !isTierMoveTarget(sourceTier) || !isTierMoveTarget(targetTier) || sourceTier === targetTier) return moves;
+        moves[key] = {
+          sourceTier,
+          targetTier,
+          merchantId: String(record.merchantId || ""),
+          merchantName: String(record.merchantName || ""),
+          movedAt: String(record.movedAt || "")
+        };
+        return moves;
+      }, {});
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function persistManualTierMoves() {
+    const storage = storageApi();
+    if (!storage) return;
+    const keys = Object.keys(state.manualTierMoves || {});
+    if (!keys.length) {
+      storage.removeItem(TIER_SHEET_MOVE_STORAGE_KEY);
+      return;
+    }
+    storage.setItem(TIER_SHEET_MOVE_STORAGE_KEY, JSON.stringify(state.manualTierMoves));
+  }
+
+  function defineTierRowMeta(row, key, sourceTier, currentTier) {
+    Object.defineProperties(row, {
+      __tierRowKey: { value: key, enumerable: false, configurable: true },
+      __sourceTierName: { value: sourceTier, enumerable: false, configurable: true },
+      __tierName: { value: currentTier, enumerable: false, configurable: true }
+    });
+    return row;
+  }
+
+  function tierRowBaseKey(row, tierName, index) {
+    const merchantId = tierRowMerchantId(row);
+    if (merchantId) return `merchant:${merchantId}:${tierName}:${index}`;
+    const merchantName = normalize(tierRowMerchantName(row));
+    return `row:${tierName}:${index}:${merchantName || "unknown"}`;
+  }
+
+  function cloneTierRow(row, key, sourceTier, currentTier) {
+    return defineTierRowMeta({ ...row }, key, sourceTier, currentTier);
+  }
+
+  function cacheOriginalTierSheetRows() {
+    TIER_SHEET_MOVE_TARGETS.forEach((tierName) => {
+      const sheet = sheetByName(tierName);
+      if (!sheet || !Array.isArray(sheet.rows)) return;
+      const rows = sheet.rows.map((row, index) => {
+        const key = tierRowBaseKey(row, tierName, index);
+        const copy = cloneTierRow(row, key, tierName, tierName);
+        originalTierSheetRowIndex.set(key, { sourceTier: tierName, row: copy });
+        return copy;
+      });
+      originalTierSheetRows.set(tierName, rows);
+    });
+  }
+
+  function addTierRowToBucket(rowsByTier, keysByTier, tierName, row) {
+    const key = row.__tierRowKey || tierRowBaseKey(row, tierName, rowsByTier.get(tierName).length);
+    const keys = keysByTier.get(tierName);
+    if (keys.has(key)) return false;
+    keys.add(key);
+    rowsByTier.get(tierName).push(row);
+    return true;
+  }
+
+  function applyManualTierMoves() {
+    const rowsByTier = new Map(TIER_SHEET_MOVE_TARGETS.map((tierName) => [tierName, []]));
+    const keysByTier = new Map(TIER_SHEET_MOVE_TARGETS.map((tierName) => [tierName, new Set()]));
+    let movesChanged = false;
+
+    originalTierSheetRows.forEach((rows, tierName) => {
+      rows.forEach((row) => {
+        const key = row.__tierRowKey;
+        const move = state.manualTierMoves[key];
+        if (move && isTierMoveTarget(move.targetTier) && move.targetTier !== tierName) return;
+        addTierRowToBucket(rowsByTier, keysByTier, tierName, cloneTierRow(row, key, tierName, tierName));
+      });
+    });
+
+    Object.entries(state.manualTierMoves).forEach(([key, move]) => {
+      const original = originalTierSheetRowIndex.get(key);
+      if (!original || !isTierMoveTarget(move.targetTier)) {
+        delete state.manualTierMoves[key];
+        movesChanged = true;
+        return;
+      }
+      if (move.targetTier === original.sourceTier) return;
+      addTierRowToBucket(rowsByTier, keysByTier, move.targetTier, cloneTierRow(original.row, key, original.sourceTier, move.targetTier));
+    });
+
+    TIER_SHEET_MOVE_TARGETS.forEach((tierName) => {
+      const sheet = sheetByName(tierName);
+      if (sheet) sheet.rows = rowsByTier.get(tierName) || [];
+    });
+    applyManualTierMovesToOffers();
+    if (movesChanged) persistManualTierMoves();
+  }
+
+  function applyManualTierMovesToOffers() {
+    offers.forEach((offer, index) => {
+      offer.tier = originalOfferTiers[index] || "";
+    });
+    Object.entries(state.manualTierMoves || {}).forEach(([key, move]) => {
+      if (!move || !isTierMoveTarget(move.targetTier)) return;
+      const original = originalTierSheetRowIndex.get(key);
+      const merchantId = move.merchantId || (original && tierRowMerchantId(original.row));
+      if (!merchantId) return;
+      (offerGroupsByMerchantId.get(merchantId) || []).forEach((offer) => {
+        offer.tier = move.targetTier;
+      });
+    });
+  }
+
+  function hasManualTierMoves() {
+    return Object.keys(state.manualTierMoves || {}).length > 0;
+  }
+
   function compactUnique(values) {
     const seen = new Set();
     return values.map((value) => String(value || "").trim()).filter((value) => {
@@ -4382,10 +4552,24 @@
   }
 
   function renderTierSummary(sheet) {
-    const cards = sheet.summaryCards && sheet.summaryCards.length
-      ? sheet.summaryCards
+    const rows = sheet.rows || [];
+    const objective = (sheet.summaryCards || []).find((card) => String(card.label || "").toLowerCase() === "objective");
+    const cards = isTierDataSheet(sheet)
+      ? [
+          { label: "Brand Count", value: rows.length.toLocaleString() },
+          { label: "Total Clicks", value: rows.reduce((sum, row) => sum + tierRowClicks(row), 0).toLocaleString() },
+          { label: "Order Count", value: rows.reduce((sum, row) => sum + tierRowOrders(row), 0).toLocaleString() },
+          { label: "Revenue", value: shortMoney(rows.reduce((sum, row) => sum + tierRowRevenue(row), 0)) },
+          {
+            label: "Avg Conversion",
+            value: shortPct(rows.reduce((sum, row) => sum + tierRowClicks(row), 0)
+              ? rows.reduce((sum, row) => sum + tierRowOrders(row), 0) / rows.reduce((sum, row) => sum + tierRowClicks(row), 0)
+              : 0)
+          },
+          ...(objective ? [objective] : [])
+        ]
       : [
-          { label: "Rows", value: String((sheet.rows || []).length) },
+          { label: "Rows", value: String(rows.length) },
           { label: "Columns", value: String((sheet.headers || []).length) }
         ];
     els.tierPageSummary.innerHTML = cards.map((card) => (
@@ -4404,6 +4588,64 @@
     return label;
   }
 
+  function tierRowSelectionKey(row) {
+    return row && (row.__tierRowKey || tierRowBaseKey(row, state.selectedTierPage, 0));
+  }
+
+  function pruneTierSelectionToVisible() {
+    const visible = new Set(state.visibleTierRowKeys || []);
+    Array.from(state.selectedTierRowKeys).forEach((key) => {
+      if (!visible.has(key)) state.selectedTierRowKeys.delete(key);
+    });
+  }
+
+  function tierSelectionHeaderHtml() {
+    return `<th class="tier-select-cell"><input class="tier-row-checkbox" type="checkbox" data-tier-select-all aria-label="Select all visible merchants" /></th>`;
+  }
+
+  function tierSelectionCellHtml(row) {
+    const key = tierRowSelectionKey(row);
+    const checked = state.selectedTierRowKeys.has(key) ? " checked" : "";
+    const merchantName = tierRowMerchantName(row) || tierRowMerchantId(row) || "merchant";
+    return `<td class="tier-select-cell"><input class="tier-row-checkbox" type="checkbox" data-tier-select-row="${escapeHtml(key)}" aria-label="Select ${escapeHtml(merchantName)}" ${checked} /></td>`;
+  }
+
+  function setTierMoveStatus(message) {
+    state.tierMoveStatus = message || "";
+    if (els.tierMoveInlineStatus) els.tierMoveInlineStatus.textContent = state.tierMoveStatus;
+    if (els.tierMoveStatus) els.tierMoveStatus.textContent = state.tierMoveStatus;
+  }
+
+  function syncTierBulkControls() {
+    const visibleKeys = state.visibleTierRowKeys || [];
+    const visibleSet = new Set(visibleKeys);
+    const visibleSelectedCount = visibleKeys.filter((key) => state.selectedTierRowKeys.has(key)).length;
+    const totalSelectedCount = state.selectedTierRowKeys.size;
+
+    if (els.tierMoveSelected) {
+      els.tierMoveSelected.disabled = totalSelectedCount === 0;
+      els.tierMoveSelected.textContent = totalSelectedCount ? `Move ${totalSelectedCount.toLocaleString()} selected` : "Move selected";
+    }
+    if (els.tierResetMoves) {
+      els.tierResetMoves.classList.toggle("hidden", !hasManualTierMoves());
+    }
+    if (els.tierSheetHead) {
+      const allCheckbox = els.tierSheetHead.querySelector("[data-tier-select-all]");
+      if (allCheckbox) {
+        allCheckbox.checked = Boolean(visibleKeys.length && visibleSelectedCount === visibleKeys.length);
+        allCheckbox.indeterminate = visibleSelectedCount > 0 && visibleSelectedCount < visibleKeys.length;
+        allCheckbox.disabled = visibleKeys.length === 0;
+      }
+    }
+    if (els.tierSheetRows) {
+      els.tierSheetRows.querySelectorAll("[data-tier-select-row]").forEach((checkbox) => {
+        const key = checkbox.dataset.tierSelectRow || "";
+        checkbox.checked = state.selectedTierRowKeys.has(key);
+        checkbox.disabled = !visibleSet.has(key);
+      });
+    }
+  }
+
   function renderSheetTable(sheet, titleEl, countEl, headEl, rowsEl, customRows = null) {
     const headers = sheet.headers || [];
     const displayHeaders = displayHeadersForSheet(sheet, headers);
@@ -4412,16 +4654,22 @@
       ? sortReportRows(sourceRows, state.tierSheetSort, (row, key) => row[key])
       : sourceRows;
     const grid = sheet.grid || [];
+    const selectable = isTierDataSheet(sheet);
     titleEl.textContent = `${sheet.name} ${t("sheet.targetRecords", "Sheet Records")}`;
     if (headers.length) {
+      state.visibleTierRowKeys = selectable ? rows.map(tierRowSelectionKey) : [];
+      if (selectable) pruneTierSelectionToVisible();
       countEl.textContent = `${rows.length.toLocaleString()} rows / ${displayHeaders.length.toLocaleString()} columns`;
-      headEl.innerHTML = `<tr>${displayHeaders.map((header) => sortableHeaderHtml(header, state.tierSheetSort, "tier")).join("")}</tr>`;
+      headEl.innerHTML = `<tr>${selectable ? tierSelectionHeaderHtml() : ""}${displayHeaders.map((header) => sortableHeaderHtml(header, state.tierSheetSort, "tier")).join("")}</tr>`;
       rowsEl.innerHTML = rows.map((row) => (
-        `<tr class="${escapeHtml(tierRowClass(sheet, row))}">${displayHeaders.map((header) => `<td>${sheetCellHtml(sheet, row, header)}</td>`).join("")}</tr>`
+        `<tr class="${escapeHtml(tierRowClass(sheet, row))}" data-tier-row-key="${escapeHtml(tierRowSelectionKey(row))}">${selectable ? tierSelectionCellHtml(row) : ""}${displayHeaders.map((header) => `<td>${sheetCellHtml(sheet, row, header)}</td>`).join("")}</tr>`
       )).join("");
+      syncTierBulkControls();
       return;
     }
 
+    state.visibleTierRowKeys = [];
+    state.selectedTierRowKeys.clear();
     const maxCols = grid.reduce((max, row) => Math.max(max, row.length), 0);
     countEl.textContent = `${grid.length.toLocaleString()} rows / ${maxCols.toLocaleString()} columns`;
     headEl.innerHTML = maxCols
@@ -4430,6 +4678,7 @@
     rowsEl.innerHTML = grid.map((row) => (
       `<tr>${Array.from({ length: maxCols }, (_, index) => `<td>${escapeHtml(row[index] || "")}</td>`).join("")}</tr>`
     )).join("");
+    syncTierBulkControls();
   }
 
   function tier2PhaseKind(sheet, row) {
@@ -4548,6 +4797,131 @@
     if (restoreFocus && wasOpen && els.tierExpand && !els.tierExpand.classList.contains("hidden")) {
       els.tierExpand.focus();
     }
+  }
+
+  function selectedTierRows(sheet) {
+    const selected = state.selectedTierRowKeys;
+    return ((sheet && sheet.rows) || []).filter((row) => selected.has(tierRowSelectionKey(row)));
+  }
+
+  function defaultTierMoveTarget() {
+    return TIER_SHEET_MOVE_TARGETS.find((tierName) => tierName !== state.selectedTierPage) || "";
+  }
+
+  function renderTierMoveDialog() {
+    if (!els.tierMoveDialog) return;
+    const selectedCount = state.selectedTierRowKeys.size;
+    const sourceTier = state.selectedTierPage;
+    if (!state.tierMoveTarget || state.tierMoveTarget === sourceTier) {
+      state.tierMoveTarget = defaultTierMoveTarget();
+    }
+    if (els.tierMoveSummary) {
+      els.tierMoveSummary.textContent = `${selectedCount.toLocaleString()} selected from ${sourceTier}`;
+    }
+    if (els.tierMoveTargets) {
+      els.tierMoveTargets.innerHTML = TIER_SHEET_MOVE_TARGETS.map((tierName) => {
+        const current = tierName === sourceTier;
+        const active = tierName === state.tierMoveTarget;
+        return `<button class="tier-move-target${active ? " active" : ""}" type="button" data-tier-move-target="${escapeHtml(tierName)}"${current ? " disabled" : ""}>
+          <span>${escapeHtml(categoryReportTierLabel(tierName))}</span>
+          <small>${current ? "Current tier" : `${((sheetByName(tierName) && sheetByName(tierName).rows) || []).length.toLocaleString()} rows`}</small>
+        </button>`;
+      }).join("");
+    }
+    if (els.tierMoveConfirm) {
+      els.tierMoveConfirm.disabled = !selectedCount || !state.tierMoveTarget || state.tierMoveTarget === sourceTier;
+      els.tierMoveConfirm.textContent = state.tierMoveTarget ? `Move to ${categoryReportTierLabel(state.tierMoveTarget)}` : "Move merchants";
+    }
+    if (els.tierMoveStatus) els.tierMoveStatus.textContent = state.tierMoveStatus || "";
+  }
+
+  function openTierMoveDialog() {
+    if (!state.selectedTierRowKeys.size || !els.tierMoveDialog) return;
+    state.tierMoveTarget = defaultTierMoveTarget();
+    renderTierMoveDialog();
+    els.tierMoveDialog.classList.remove("hidden");
+    document.body.classList.add("tier-move-open");
+    window.requestAnimationFrame(() => {
+      const active = els.tierMoveTargets && els.tierMoveTargets.querySelector(".tier-move-target.active:not(:disabled)");
+      if (active) active.focus();
+      else if (els.tierMoveConfirm) els.tierMoveConfirm.focus();
+    });
+  }
+
+  function closeTierMoveDialog() {
+    if (!els.tierMoveDialog) return;
+    els.tierMoveDialog.classList.add("hidden");
+    document.body.classList.remove("tier-move-open");
+    if (els.tierMoveSelected && !els.tierMoveSelected.disabled) els.tierMoveSelected.focus();
+  }
+
+  function moveSelectedTierRows() {
+    const sourceTier = state.selectedTierPage;
+    const targetTier = state.tierMoveTarget;
+    const sheet = sheetByName(sourceTier);
+    if (!sheet || !isTierMoveTarget(targetTier) || targetTier === sourceTier || !state.selectedTierRowKeys.size) return;
+
+    const selectedRows = selectedTierRows(sheet);
+    let movedCount = 0;
+    selectedRows.forEach((row) => {
+      const key = tierRowSelectionKey(row);
+      const original = originalTierSheetRowIndex.get(key);
+      if (!original) return;
+      if (targetTier === original.sourceTier) {
+        if (state.manualTierMoves[key]) {
+          delete state.manualTierMoves[key];
+          movedCount += 1;
+        }
+        return;
+      }
+      state.manualTierMoves[key] = {
+        sourceTier: original.sourceTier,
+        targetTier,
+        merchantId: tierRowMerchantId(original.row),
+        merchantName: tierRowMerchantName(original.row),
+        movedAt: localDateKey(new Date())
+      };
+      movedCount += 1;
+    });
+
+    persistManualTierMoves();
+    applyManualTierMoves();
+    state.selectedTierRowKeys.clear();
+    setTierMoveStatus(movedCount ? `Moved ${movedCount.toLocaleString()} to ${categoryReportTierLabel(targetTier)}` : "No merchants moved");
+    closeTierMoveDialog();
+    renderTierPage(sourceTier);
+    renderDashboardCategoryReport();
+  }
+
+  function resetTierMoves() {
+    if (!hasManualTierMoves()) return;
+    state.manualTierMoves = {};
+    state.selectedTierRowKeys.clear();
+    persistManualTierMoves();
+    applyManualTierMoves();
+    setTierMoveStatus("Manual tier moves reset");
+    renderTierPage(state.selectedTierPage);
+    renderDashboardCategoryReport();
+  }
+
+  function handleTierSelectionChange(event) {
+    const checkbox = event.target.closest("[data-tier-select-all], [data-tier-select-row]");
+    if (!checkbox) return;
+    setTierMoveStatus("");
+    if (checkbox.dataset.tierSelectAll !== undefined) {
+      const visibleKeys = state.visibleTierRowKeys || [];
+      visibleKeys.forEach((key) => {
+        if (checkbox.checked) state.selectedTierRowKeys.add(key);
+        else state.selectedTierRowKeys.delete(key);
+      });
+      syncTierBulkControls();
+      return;
+    }
+    const key = checkbox.dataset.tierSelectRow || "";
+    if (!key) return;
+    if (checkbox.checked) state.selectedTierRowKeys.add(key);
+    else state.selectedTierRowKeys.delete(key);
+    syncTierBulkControls();
   }
 
   function sheetRowUniqueValues(rows, keys) {
@@ -4795,6 +5169,9 @@
       els.tierSheetHead.innerHTML = "";
       els.tierSheetRows.innerHTML = "";
       els.tierTableCount.textContent = "";
+      state.visibleTierRowKeys = [];
+      state.selectedTierRowKeys.clear();
+      syncTierBulkControls();
       closeTierSheetOverlay({ restoreFocus: false });
       syncTierSheetOverlay();
       return;
@@ -4910,7 +5287,11 @@
 
   function switchPage(page) {
     state.page = page;
-    if (page !== "tier") closeTierSheetOverlay({ restoreFocus: false });
+    if (page !== "tier") {
+      state.selectedTierRowKeys.clear();
+      closeTierSheetOverlay({ restoreFocus: false });
+      closeTierMoveDialog();
+    }
     const isTier = page === "tier";
     const isSheets = page === "sheets";
     document.querySelectorAll(".dashboard-page").forEach((el) => el.classList.toggle("hidden", page !== "dashboard"));
@@ -4980,6 +5361,8 @@
     els.tierNavButtons.forEach((button) => {
       button.addEventListener("click", () => {
         state.selectedTierPage = button.dataset.tierPage;
+        state.selectedTierRowKeys.clear();
+        setTierMoveStatus("");
         switchPage("tier");
       });
     });
@@ -4990,10 +5373,30 @@
     els.tierSheetMinRevenue.addEventListener("input", () => { state.tierSheetFilters.minRevenue = els.tierSheetMinRevenue.value; renderTierPage(state.selectedTierPage); });
     els.sheetGridHead.addEventListener("click", handleReportSortClick);
     els.tierSheetHead.addEventListener("click", handleReportSortClick);
+    els.tierSheetHead.addEventListener("change", handleTierSelectionChange);
+    els.tierSheetRows.addEventListener("change", handleTierSelectionChange);
+    els.tierMoveSelected.addEventListener("click", openTierMoveDialog);
+    els.tierResetMoves.addEventListener("click", resetTierMoves);
+    els.tierMoveTargets.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-tier-move-target]");
+      if (!button || button.disabled) return;
+      state.tierMoveTarget = button.dataset.tierMoveTarget;
+      renderTierMoveDialog();
+    });
+    els.tierMoveConfirm.addEventListener("click", moveSelectedTierRows);
+    els.tierMoveCancel.addEventListener("click", closeTierMoveDialog);
+    els.tierMoveClose.addEventListener("click", closeTierMoveDialog);
+    els.tierMoveDialog.addEventListener("click", (event) => {
+      if (event.target === els.tierMoveDialog) closeTierMoveDialog();
+    });
     els.tierExpand.addEventListener("click", openTierSheetOverlay);
     els.tierOverlayClose.addEventListener("click", () => closeTierSheetOverlay());
     els.sheetExpandedBackdrop.addEventListener("click", () => closeTierSheetOverlay());
     document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && els.tierMoveDialog && !els.tierMoveDialog.classList.contains("hidden")) {
+        closeTierMoveDialog();
+        return;
+      }
       if (event.key === "Escape" && state.expandedTierSheet) closeTierSheetOverlay();
     });
     els.paymentMonth.addEventListener("change", () => { state.payments.month = els.paymentMonth.value; renderPaymentsPage(); });
@@ -5041,6 +5444,9 @@
     maybeAutoSyncLevantaPayments();
     window.setInterval(maybeAutoSyncLevantaPayments, AUTO_PAYMENT_SYNC_INTERVAL_MS);
   }
+
+  cacheOriginalTierSheetRows();
+  applyManualTierMoves();
 
   if (window.__OFFER_INTELLIGENCE_TEST__) {
     window.OFFER_INTELLIGENCE_TEST_HOOKS = {
