@@ -621,10 +621,13 @@ p {
 }
 
 .insight-panel {
+  align-self: start;
   display: grid;
   gap: 10px;
   grid-template-rows: auto minmax(0, 1fr);
-  min-height: 620px;
+  max-height: min(620px, calc(100vh - 190px));
+  min-height: min(520px, calc(100vh - 190px));
+  overflow: hidden;
   padding: 14px;
 }
 
@@ -644,14 +647,22 @@ p {
 }
 
 .recommendation-box {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 
 .context-panel {
-  max-height: none;
+  max-height: min(520px, 58vh);
+  min-height: 0;
+  overscroll-behavior: contain;
   overflow: auto;
-  padding-right: 2px;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
+}
+
+.context-panel > * {
+  flex-shrink: 0;
 }
 
 .context-stats {
