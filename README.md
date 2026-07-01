@@ -47,6 +47,21 @@ Each tier page (`Tier 1`, `Tier 2`, `Tier 3`, `Tier 4`, and `BLACK TIER`) render
 - Tier XLSX downloads also include an `Offer List` sheet with `Merchant ID`, `Merchant Name`, `Category`, and `Avg Commission Rate`.
 - `Avg Commission Rate` is rounded up to a whole percentage for export.
 
+### Dashboard Category Report
+
+The dashboard renders a standalone category-wise report from the tier sheet rows. It has its own tier checkbox filter and is independent of the main dashboard filters.
+
+- `All Tier 1-4` selects `Tier 1`, `Tier 2`, `Tier 3`, and `Tier 4` only.
+- `BLACK TIER` is available as a separate checkbox and is not included in the all-tier shortcut.
+- The report groups selected tier merchants by displayed category and shows merchants, revenue, orders, conversion, EPC, AOV, top merchants, and tier mix.
+
+Manual test case:
+
+1. Open `http://127.0.0.1:8765` and confirm the dashboard category report defaults to `Tier 1`, `Tier 2`, `Tier 3`, and `Tier 4` with `BLACK TIER` unchecked.
+2. Confirm the current exported data shows `6,302` rows, `48` categories, `$2,166,390.16` revenue, and `21,843` orders for the default Tier 1-4 view.
+3. Clear the tier selection, check only `Tier 3`, and confirm the report updates to `370` rows, `26` categories, `$514,930.55` revenue, `4,056` orders, and Tier mix values that only use `T3`.
+4. Check `BLACK TIER`, then click `All Tier 1-4`; confirm `BLACK TIER` is cleared again and the report returns to the default Tier 1-4 totals.
+
 ### Chatbot Intent Flow
 
 The chatbot separates merchant-name lookup from category search:

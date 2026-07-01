@@ -20,6 +20,8 @@
   const MAX_RECOMMENDATION_EXPORT = 1000;
   const AUTO_PAYMENT_SYNC_KEY = "offerPaymentLastAutoSync";
   const AUTO_PAYMENT_SYNC_INTERVAL_MS = 60 * 60 * 1000;
+  const STANDARD_CATEGORY_REPORT_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"];
+  const CATEGORY_REPORT_TIER_OPTIONS = [...STANDARD_CATEGORY_REPORT_TIERS, "BLACK TIER"];
   const PAYMENT_TODAY = new Date(`${localDateKey(new Date())}T00:00:00`);
   let paymentRecords = withPendingPaymentPlaceholders((data.paymentRecords || []).map(normalizePaymentRecord));
   const paymentRecordsByMerchant = new Map();
@@ -36,6 +38,7 @@
     notPaidOnly: false,
     sort: "epc",
     descending: true,
+    categoryReportTiers: STANDARD_CATEGORY_REPORT_TIERS.slice(),
     lastOffer: null,
     lastRows: [],
     currentQuery: "",
@@ -93,6 +96,9 @@
     notPaidOnly: document.getElementById("notPaidOnly"),
     reset: document.getElementById("resetFilters"),
     metrics: document.getElementById("metrics"),
+    dashboardCategoryTierPicker: document.getElementById("dashboardCategoryTierPicker"),
+    dashboardCategoryReportSubtitle: document.getElementById("dashboardCategoryReportSubtitle"),
+    dashboardCategoryReportBody: document.getElementById("dashboardCategoryReportBody"),
     table: document.getElementById("offerRows"),
     tableCount: document.getElementById("tableCount"),
     chatLog: document.getElementById("chatLog"),
@@ -3421,8 +3427,155 @@
     }).join("");
   }
 
+  function categoryReportTierLabel(tier) {
+    return tier === "BLACK TIER" ? "Black Tier" : tier;
+  }
+
+  function shortCategoryReportTierLabel(tier) {
+    if (tier === "BLACK TIER") return "Black";
+    return String(tier || "").replace("Tier ", "T");
+  }
+
+  function normalizeCategoryReportTiers(tiers) {
+    const selected = new Set(tiers || []);
+    return CATEGORY_REPORT_TIER_OPTIONS.filter((tier) => selected.has(tier));
+  }
+
+  function selectedCategoryReportTierSet() {
+    return new Set(normalizeCategoryReportTiers(state.categoryReportTiers));
+  }
+
+  function renderDashboardCategoryTierPicker() {
+    if (!els.dashboardCategoryTierPicker) return;
+    const options = [
+      { value: "all", label: "All Tier 1-4" },
+      ...CATEGORY_REPORT_TIER_OPTIONS.map((tier) => ({ value: tier, label: categoryReportTierLabel(tier) }))
+    ];
+    els.dashboardCategoryTierPicker.innerHTML = options.map((option) => `<label class="checkbox-row dashboard-category-tier-option">
+      <input type="checkbox" data-category-report-tier="${escapeHtml(option.value)}" />
+      <span>${escapeHtml(option.label)}</span>
+    </label>`).join("");
+    syncDashboardCategoryTierControls();
+  }
+
+  function syncDashboardCategoryTierControls() {
+    if (!els.dashboardCategoryTierPicker) return;
+    const selected = selectedCategoryReportTierSet();
+    const allStandardSelected = STANDARD_CATEGORY_REPORT_TIERS.every((tier) => selected.has(tier));
+    const someStandardSelected = STANDARD_CATEGORY_REPORT_TIERS.some((tier) => selected.has(tier));
+    els.dashboardCategoryTierPicker.querySelectorAll("[data-category-report-tier]").forEach((input) => {
+      const tier = input.dataset.categoryReportTier;
+      if (tier === "all") {
+        input.checked = allStandardSelected;
+        input.indeterminate = someStandardSelected && !allStandardSelected;
+        return;
+      }
+      input.checked = selected.has(tier);
+      input.indeterminate = false;
+    });
+  }
+
+  function setDashboardCategoryReportAll(checked) {
+    const selected = selectedCategoryReportTierSet();
+    STANDARD_CATEGORY_REPORT_TIERS.forEach((tier) => {
+      if (checked) selected.add(tier);
+      else selected.delete(tier);
+    });
+    if (checked) selected.delete("BLACK TIER");
+    state.categoryReportTiers = normalizeCategoryReportTiers(Array.from(selected));
+  }
+
+  function handleDashboardCategoryTierChange(event) {
+    const input = event.target.closest("[data-category-report-tier]");
+    if (!input) return;
+    const tier = input.dataset.categoryReportTier;
+    if (tier === "all") {
+      setDashboardCategoryReportAll(input.checked);
+    } else {
+      const selected = selectedCategoryReportTierSet();
+      if (input.checked) selected.add(tier);
+      else selected.delete(tier);
+      state.categoryReportTiers = normalizeCategoryReportTiers(Array.from(selected));
+    }
+    syncDashboardCategoryTierControls();
+    renderDashboardCategoryReport();
+  }
+
+  function dashboardCategoryReportRows() {
+    return normalizeCategoryReportTiers(state.categoryReportTiers).flatMap((tierName) => {
+      const sheet = sheetByName(tierName);
+      return sheet && Array.isArray(sheet.rows)
+        ? sheet.rows.map((row) => ({ ...row, __tierName: tierName }))
+        : [];
+    });
+  }
+
+  function tierBreakdownText(group) {
+    const breakdown = group.tierBreakdown || {};
+    return CATEGORY_REPORT_TIER_OPTIONS
+      .map((tier) => [tier, number(breakdown[tier])])
+      .filter(([, count]) => count > 0)
+      .map(([tier, count]) => `${shortCategoryReportTierLabel(tier)} ${count.toLocaleString()}`)
+      .join(" / ") || "-";
+  }
+
+  function dashboardCategoryReportTableRows(groups) {
+    return groups.map((group) => `<tr>
+      <td><strong>${escapeHtml(group.category)}</strong></td>
+      <td>${number(group.merchantCount).toLocaleString()}</td>
+      <td>${shortMoney(group.revenue)}</td>
+      <td>${number(group.orders).toLocaleString()}</td>
+      <td>${shortPct(group.avgCvr)}</td>
+      <td>${shortEpc(group.avgEpc)}</td>
+      <td>${shortMoney(group.avgAov)}</td>
+      <td>${escapeHtml(group.previewMerchants || group.topMerchant || "-")}</td>
+      <td>${escapeHtml(tierBreakdownText(group))}</td>
+    </tr>`).join("");
+  }
+
+  function renderDashboardCategoryReport() {
+    if (!els.dashboardCategoryReportBody) return;
+    const rows = dashboardCategoryReportRows();
+    const groups = tierCategorySummaryRows(null, rows);
+    const totalRevenue = groups.reduce((sum, group) => sum + number(group.revenue), 0);
+    const totalOrders = groups.reduce((sum, group) => sum + number(group.orders), 0);
+    const totalClicks = groups.reduce((sum, group) => sum + number(group.clicks), 0);
+    const merchantCount = groups.reduce((sum, group) => sum + number(group.merchantCount), 0);
+    const selectedTiers = normalizeCategoryReportTiers(state.categoryReportTiers).map(categoryReportTierLabel);
+    if (els.dashboardCategoryReportSubtitle) {
+      const tierText = selectedTiers.length ? selectedTiers.join(", ") : "No tiers selected";
+      els.dashboardCategoryReportSubtitle.textContent = `${tierText} / ${rows.length.toLocaleString()} rows / ${groups.length.toLocaleString()} categories`;
+    }
+    els.dashboardCategoryReportBody.innerHTML = `<dl class="dashboard-category-report-totals">
+      <div><dt>${escapeHtml(labelText("Merchants"))}</dt><dd>${merchantCount.toLocaleString()}</dd></div>
+      <div><dt>${escapeHtml(labelText("Revenue"))}</dt><dd>${shortMoney(totalRevenue)}</dd></div>
+      <div><dt>${escapeHtml(labelText("Orders"))}</dt><dd>${totalOrders.toLocaleString()}</dd></div>
+      <div><dt>${escapeHtml(labelText("CVR"))}</dt><dd>${shortPct(totalClicks ? totalOrders / totalClicks : null)}</dd></div>
+    </dl>
+    <div class="table-wrap tier-category-table-wrap dashboard-category-table-wrap">
+      <table class="sheet-table tier-category-table dashboard-category-report-table">
+        <thead>
+          <tr>
+            <th>${escapeHtml(labelText("Category"))}</th>
+            <th>${escapeHtml(labelText("Merchants"))}</th>
+            <th>${escapeHtml(labelText("Revenue"))}</th>
+            <th>${escapeHtml(labelText("Orders"))}</th>
+            <th>${escapeHtml(labelText("CVR"))}</th>
+            <th>EPC</th>
+            <th>AOV</th>
+            <th>Top merchants</th>
+            <th>Tier mix</th>
+          </tr>
+        </thead>
+        <tbody>${groups.length ? dashboardCategoryReportTableRows(groups) : `<tr><td colspan="9">No category rows match the selected tiers.</td></tr>`}</tbody>
+      </table>
+    </div>`;
+    syncDashboardCategoryTierControls();
+  }
+
   function renderAll(rows = getFiltered()) {
     renderMetrics(rows);
+    renderDashboardCategoryReport();
     renderTable(rows);
     if (state.currentContext.type === "default") {
       setContext({ type: "default", items: rows.slice(0, 120), summary: aggregateRows(rows), filters: {} });
@@ -4283,18 +4436,21 @@
           clicks: 0,
           epcWeightedByClicks: 0,
           epcSum: 0,
-          epcCount: 0
+          epcCount: 0,
+          tierBreakdown: {}
         });
       }
       const group = groups.get(category);
       const merchantId = tierRowMerchantId(row);
       const clicks = tierRowClicks(row);
       const epc = tierRowEpc(row);
+      const tierName = row.__tierName || (sheet && sheet.name) || "";
       group.rows.push(row);
       if (merchantId) group.merchantIds.add(merchantId);
       group.revenue += tierRowRevenue(row);
       group.orders += tierRowOrders(row);
       group.clicks += clicks;
+      if (tierName) group.tierBreakdown[tierName] = (group.tierBreakdown[tierName] || 0) + 1;
       if (epc) {
         if (clicks) group.epcWeightedByClicks += epc * clicks;
         group.epcSum += epc;
@@ -4317,7 +4473,8 @@
         avgEpc: group.clicks && group.epcWeightedByClicks ? group.epcWeightedByClicks / group.clicks : (group.epcCount ? group.epcSum / group.epcCount : null),
         avgAov: group.orders ? group.revenue / group.orders : null,
         topMerchant: tierRowMerchantName(topRow),
-        previewMerchants
+        previewMerchants,
+        tierBreakdown: group.tierBreakdown
       };
     }).sort(compareTierCategorySummaryRows);
   }
@@ -4568,6 +4725,7 @@
     refreshTargetFilters();
     setDatasetStamp();
     setPaymentStamp("saved", isoDate(PAYMENT_TODAY));
+    renderDashboardCategoryTierPicker();
     quickPrompts.forEach(({ key, prompt }) => {
       const button = document.createElement("button");
       button.type = "button";
@@ -4588,6 +4746,7 @@
     els.minAov.addEventListener("input", () => { state.minAov = els.minAov.value; renderAll(); });
     els.minCvr.addEventListener("input", () => { state.minCvr = els.minCvr.value; renderAll(); });
     els.notPaidOnly.addEventListener("change", () => { state.notPaidOnly = els.notPaidOnly.checked; renderAll(); });
+    els.dashboardCategoryTierPicker.addEventListener("change", handleDashboardCategoryTierChange);
     els.dashboardNav.addEventListener("click", () => switchPage("dashboard"));
     els.paymentsNav.addEventListener("click", () => switchPage("payments"));
     els.sheetsNav.addEventListener("click", () => switchPage("sheets"));
