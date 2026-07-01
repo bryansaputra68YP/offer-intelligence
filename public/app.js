@@ -6,14 +6,14 @@
   const tier2Rules = window.TIER2_RECOMMENDATION_RULES || {};
   const offersByMerchantId = new Map();
   const offerGroupsByMerchantId = new Map();
-  const originalOfferTiersByMerchantId = new Map();
-  offers.forEach((offer) => {
+  const originalOfferTiers = [];
+  offers.forEach((offer, index) => {
+    originalOfferTiers[index] = offer.tier || "";
     const merchantId = String(offer.merchantId || "").trim();
     if (merchantId) {
       if (!offersByMerchantId.has(merchantId)) offersByMerchantId.set(merchantId, offer);
       if (!offerGroupsByMerchantId.has(merchantId)) offerGroupsByMerchantId.set(merchantId, []);
       offerGroupsByMerchantId.get(merchantId).push(offer);
-      if (!originalOfferTiersByMerchantId.has(merchantId)) originalOfferTiersByMerchantId.set(merchantId, offer.tier || "");
     }
     offer.paymentCycle = normalizePaymentCycle(offer.paymentCycle, offer.network);
   });
@@ -4470,10 +4470,8 @@
   }
 
   function applyManualTierMovesToOffers() {
-    offers.forEach((offer) => {
-      const merchantId = String(offer.merchantId || "").trim();
-      if (!merchantId || !originalOfferTiersByMerchantId.has(merchantId)) return;
-      offer.tier = originalOfferTiersByMerchantId.get(merchantId);
+    offers.forEach((offer, index) => {
+      offer.tier = originalOfferTiers[index] || "";
     });
     Object.entries(state.manualTierMoves || {}).forEach(([key, move]) => {
       if (!move || !isTierMoveTarget(move.targetTier)) return;
