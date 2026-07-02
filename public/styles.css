@@ -549,6 +549,48 @@ p {
   font-size: 11px;
 }
 
+.tier-move-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 168px;
+}
+
+.tier-move-control select {
+  height: 30px;
+  min-width: 86px;
+  padding: 0 26px 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background-color: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tier-move-button {
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.tier-move-button:hover {
+  background: var(--blue-dark);
+}
+
+.tier-override-note {
+  margin-top: 5px;
+  color: var(--green-strong);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .recommendation-answer {
   margin-top: 9px;
   padding: 9px 10px;
@@ -641,6 +683,108 @@ p {
 
 .table-download-button {
   min-height: 34px;
+  min-width: 92px;
+}
+
+.table-select-button {
+  min-height: 34px;
+  min-width: 78px;
+}
+
+.table-toolbar-actions {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.column-picker {
+  position: relative;
+}
+
+.column-picker-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 6;
+  width: min(520px, calc(100vw - 36px));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 12px;
+}
+
+.column-picker-header {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+
+.column-picker-header strong {
+  font-size: 13px;
+}
+
+.column-picker-header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.column-picker-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.column-picker-actions button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfc;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.column-picker-actions button:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.column-picker-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.column-check {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfc;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.column-check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+.column-check span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .recommendation-box {
@@ -1200,6 +1344,20 @@ td strong {
   .table-toolbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .table-toolbar-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .column-picker-panel {
+    left: 0;
+    right: auto;
+  }
+
+  .column-picker-list {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .quick-actions {

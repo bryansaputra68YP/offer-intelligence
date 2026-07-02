@@ -95,27 +95,83 @@ def normalize(value):
     return "".join(ch for ch in str(value or "").lower().replace("&", "and") if ch.isalnum())
 
 
+def tier_rank(offer):
+    return {
+        "Tier 1": 1,
+        "Tier 2": 2,
+        "Tier 3": 3,
+        "Tier 4": 4,
+        "BLACK TIER": 9,
+    }.get(str((offer or {}).get("tier") or ""), 8)
+
+
+def best_offer(candidates):
+    valid = [offer for offer in candidates if offer]
+    if not valid:
+        return {}
+    return sorted(
+        valid,
+        key=lambda offer: (
+            tier_rank(offer),
+            -number(offer.get("salesAmount")),
+            str(offer.get("brand") or ""),
+        ),
+    )[0]
+
+
+def safe_brand_match(offer_brand, merchant_name):
+    if not offer_brand or not merchant_name:
+        return False
+    if offer_brand == merchant_name:
+        return True
+    shorter = min(len(offer_brand), len(merchant_name))
+    longer = max(len(offer_brand), len(merchant_name))
+    return shorter >= 5 and shorter / longer >= 0.65 and (
+        offer_brand in merchant_name or merchant_name in offer_brand
+    )
+
+
 def load_static_data():
     if not DATA_FILE.exists():
-        return {}, {}, {}
+        return {}, {}, {}, []
     text = DATA_FILE.read_text(encoding="utf-8")
     prefix = "window.CHATBOT_DATA="
     if not text.startswith(prefix):
-        return {}, {}, {}
+        return {}, {}, {}, []
     payload = json.loads(text[len(prefix) :].rstrip(";\n"))
-    by_id = {}
-    by_brand = {}
-    for offer in payload.get("offers", []):
+    raw_by_id = {}
+    raw_by_brand = {}
+    offers = payload.get("offers", [])
+    for offer in offers:
         merchant_id = str(offer.get("merchantId") or "").strip()
         brand = normalize(offer.get("brand"))
-        if merchant_id and merchant_id not in by_id:
-            by_id[merchant_id] = offer
-        if brand and brand not in by_brand:
-            by_brand[brand] = offer
-    return payload, by_id, by_brand
+        if merchant_id:
+            raw_by_id.setdefault(merchant_id, []).append(offer)
+        if brand:
+            raw_by_brand.setdefault(brand, []).append(offer)
+    by_id = {merchant_id: best_offer(matches) for merchant_id, matches in raw_by_id.items()}
+    by_brand = {brand: best_offer(matches) for brand, matches in raw_by_brand.items()}
+    return payload, by_id, by_brand, offers
 
 
-STATIC_DATA, OFFERS_BY_ID, OFFERS_BY_BRAND = load_static_data()
+STATIC_DATA, OFFERS_BY_ID, OFFERS_BY_BRAND, STATIC_OFFERS = load_static_data()
+
+
+def offer_for_payment(merchant_id, merchant_name):
+    clean_id = str(merchant_id or "").strip()
+    if clean_id and clean_id in OFFERS_BY_ID:
+        return OFFERS_BY_ID[clean_id]
+
+    clean_name = normalize(merchant_name)
+    if clean_name and clean_name in OFFERS_BY_BRAND:
+        return OFFERS_BY_BRAND[clean_name]
+
+    fuzzy = [
+        offer
+        for offer in STATIC_OFFERS
+        if safe_brand_match(normalize(offer.get("brand")), clean_name)
+    ]
+    return best_offer(fuzzy)
 
 
 def availability_date(year, zero_based_month, payment_cycle=None):
@@ -176,9 +232,9 @@ def has_payable_payment_amount(record):
 def pending_placeholder_record(source, month_name, zero_based_month, year):
     merchant_id = str(source.get("merchantId") or "").strip()
     merchant_name = str(source.get("merchantName") or source.get("brand") or merchant_id or "Unknown merchant").strip()
-    offer = OFFERS_BY_ID.get(merchant_id) or OFFERS_BY_BRAND.get(normalize(merchant_name)) or {}
+    offer = offer_for_payment(merchant_id, merchant_name)
     network = source.get("network") or offer.get("network") or "Levanta"
-    payment_cycle = normalized_payment_cycle(source.get("paymentCycle") or offer.get("paymentCycle"), network)
+    payment_cycle = normalized_payment_cycle(offer.get("paymentCycle") or source.get("paymentCycle"), offer.get("network") or network)
     month_key = f"{year}-{zero_based_month + 1:02d}"
     return {
         "id": f"{merchant_id or normalize(merchant_name)}::{month_key}::pending-placeholder",
@@ -304,7 +360,7 @@ def normalize_invoice_item(item, month_name, zero_based_month, year):
     brand = item.get("brand") or {}
     levanta_brand_id = str(brand.get("id") or "").strip()
     merchant_name = str(brand.get("name") or "").strip()
-    offer = OFFERS_BY_ID.get(levanta_brand_id) or OFFERS_BY_BRAND.get(normalize(merchant_name)) or {}
+    offer = offer_for_payment(levanta_brand_id, merchant_name)
     merchant_id = str(offer.get("merchantId") or levanta_brand_id).strip()
     revenue_made = levanta_revenue_made(item)
     commission_made = levanta_commission_made(item)

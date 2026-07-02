@@ -68,6 +68,33 @@ def tier_rank(tier)
   { "Tier 1" => 1, "Tier 2" => 2, "Tier 3" => 3, "Tier 4" => 4, "BLACK TIER" => 9 }.fetch(tier, 8)
 end
 
+def best_payment_offer(candidates)
+  candidates.compact.min_by do |offer|
+    [tier_rank(offer["tier"]), -num(offer["salesAmount"]).to_f, offer["brand"].to_s]
+  end
+end
+
+def safe_brand_match?(offer_brand, merchant_name)
+  return false if offer_brand.to_s.empty? || merchant_name.to_s.empty?
+  return true if offer_brand == merchant_name
+
+  shorter = [offer_brand.length, merchant_name.length].min
+  longer = [offer_brand.length, merchant_name.length].max
+  shorter >= 5 && shorter.to_f / longer >= 0.65 && (offer_brand.include?(merchant_name) || merchant_name.include?(offer_brand))
+end
+
+def offer_for_payment(brand_id, brand_name, offers_by_mid, offers_by_brand, offers)
+  mid = merchant_key(brand_id)
+  by_id = best_payment_offer(offers_by_mid[mid].to_a)
+  return by_id if by_id
+
+  normalized_brand = normalize_brand(brand_name)
+  exact = best_payment_offer(offers_by_brand[normalized_brand].to_a)
+  return exact if exact
+
+  best_payment_offer(offers.select { |offer| safe_brand_match?(normalize_brand(offer["brand"]), normalized_brand) })
+end
+
 def payment_availability_date(year, month_name, payment_cycle = nil)
   month_number = MONTH_NUMBERS[month_name.to_s]
   return nil unless year && month_number
@@ -380,10 +407,11 @@ offers = CSV.read(brand_csv, headers: true).map do |row|
   }
 end.map { |offer| compact_hash(offer) }
 
+offers_by_mid = offers.group_by { |offer| merchant_key(offer["merchantId"]) }
 offers_by_brand = offers.group_by { |offer| normalize_brand(offer["brand"]) }
 payment_records = invoice_rows.map do |row|
   brand_name = row["brand"].is_a?(Hash) ? row["brand"]["name"] : row["brand"]
-  matched_offer = offers_by_brand[normalize_brand(brand_name)].to_a.min_by { |offer| [tier_rank(offer["tier"]), -num(offer["salesAmount"]).to_f] }
+  matched_offer = offer_for_payment(row["brand_id"], brand_name, offers_by_mid, offers_by_brand, offers)
   report_month = row["invoice_month"] || row["month"]
   report_year = row["invoice_year"] || 2026
   sales = num(row["sales"])
