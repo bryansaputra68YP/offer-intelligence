@@ -48,7 +48,7 @@
           </div>
           <div class="source-row">
             <span>Levanta</span>
-            <strong data-i18n="source.payments">Mar-Jun payments</strong>
+            <strong data-i18n="source.payments">Feb-Jun payments</strong>
           </div>
           <div class="source-row">
             <span>Sheets</span>
@@ -196,6 +196,12 @@
               </select>
             </label>
             <label>
+              <span data-i18n="label.Region">Region</span>
+              <select id="paymentRegionFilter">
+                <option value="all">All regions</option>
+              </select>
+            </label>
+            <label>
               <span data-i18n="label.Tier">Tier</span>
               <select id="paymentTierFilter">
                 <option value="all">All tiers</option>
@@ -241,6 +247,7 @@
                       <th data-i18n="label.Merchant ID">Merchant ID</th>
                       <th data-i18n="label.Merchant">Merchant</th>
                       <th data-i18n="label.Network">Network</th>
+                      <th data-i18n="label.Region">Region</th>
                       <th data-i18n="label.Tier">Tier</th>
                       <th data-i18n="label.Month">Month</th>
                       <th data-i18n="label.Status">Status</th>
@@ -370,6 +377,6 @@
     <script src="./sheet_report_data.js?v=20260624-sheet2"></script>
     <script src="./chatbot_data.js?v=20260626-paystatus1"></script>
     <script src="./chatbot_i18n.js?v=20260626-zh1"></script>
-    <script src="./app.js?v=20260702-tiercolumns1"></script>
+    <script src="./app.js?v=20260702-payments-feb-regions1"></script>
   </body>
 </html>

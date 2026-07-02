@@ -7,13 +7,15 @@
   const TIER_OVERRIDE_KEY = "offerTierOverrides";
   const TIER_COLUMN_KEY = "offerTierVisibleColumns";
   let tierOverrides = loadTierOverrides();
+  const sheetPaymentCycles = buildSheetPaymentCycleIndex();
   offers.forEach((offer) => {
     offer.originalTier = offer.originalTier || offer.tier || "Unknown";
     applyTierOverrideToOffer(offer);
-    offer.paymentCycle = normalizePaymentCycle(offer.paymentCycle, offer.network);
+    offer.paymentCycle = resolveOfferPaymentCycle(offer);
+    offer.region = normalizeRegion(offer.region || offer.country || inferRegionFromText(offer.brand));
   });
   const PAYMENT_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-  const ACTIVE_PAYMENT_MONTHS = ["March", "April", "May", "June"];
+  const ACTIVE_PAYMENT_MONTHS = ["February", "March", "April", "May", "June"];
   const MAX_RECOMMENDATION_EXPORT = 1000;
   const AUTO_PAYMENT_SYNC_KEY = "offerPaymentLastAutoSync";
   const AUTO_PAYMENT_SYNC_INTERVAL_MS = 60 * 60 * 1000;
@@ -40,6 +42,7 @@
     payments: {
       month: "all",
       network: "all",
+      region: "all",
       tier: "all",
       status: "all",
       search: "",
@@ -143,6 +146,7 @@
     paymentSync: document.getElementById("paymentSync"),
     paymentMonth: document.getElementById("paymentMonthFilter"),
     paymentNetwork: document.getElementById("paymentNetworkFilter"),
+    paymentRegion: document.getElementById("paymentRegionFilter"),
     paymentTier: document.getElementById("paymentTierFilter"),
     paymentStatus: document.getElementById("paymentStatusFilter"),
     paymentSearch: document.getElementById("paymentSearch"),
@@ -185,7 +189,7 @@
       "nav.targets": "目标",
       "sidebar.status": "数据状态",
       "source.backendEpc": "后台 EPC",
-      "source.payments": "3-6月付款",
+      "source.payments": "2-6月付款",
       "source.sheets": "分层逻辑已加载",
       "dashboard.title": "推荐聊天机器人",
       "filters.dashboard": "仪表盘筛选",
@@ -216,6 +220,7 @@
       "label.Merchant ID": "商家 ID",
       "label.Tier": "分层",
       "label.Network": "网络",
+      "label.Region": "地区",
       "label.Category": "品类",
       "label.Month": "月份",
       "label.Status": "状态",
@@ -265,6 +270,7 @@
       "label.Target": "目标",
       "option.All tiers": "全部分层",
       "option.All networks": "全部网络",
+      "option.All regions": "全部地区",
       "option.All categories": "全部品类",
       "option.All months": "全部月份",
       "option.All statuses": "全部状态",
@@ -277,6 +283,7 @@
       "option.Unknown": "未知",
       "move.original": "原始",
       "move.movedFrom": "从原层级移动",
+      "option.February": "二月",
       "option.March": "三月",
       "option.April": "四月",
       "option.May": "五月",
@@ -752,6 +759,94 @@
     return cycle > 0 ? Math.round(cycle) : 60;
   }
 
+  function paymentCycleKeys(merchantId, merchantName) {
+    const keys = [];
+    const id = String(merchantId || "").trim();
+    const name = normalize(merchantName);
+    if (id) keys.push(`id:${id}`);
+    if (name) keys.push(`name:${name}`);
+    return keys;
+  }
+
+  function buildSheetPaymentCycleIndex() {
+    const cycles = new Map();
+    (sheetReport.sheets || []).forEach((sheet) => {
+      (sheet.rows || []).forEach((row) => {
+        const cycle = number(row["Payment Cycle"]);
+        if (cycle <= 0) return;
+        paymentCycleKeys(row["Merchant ID"] || row["Merchant Id"] || row.merchantId, row["Merchant Name"] || row.Brand || row.brand)
+          .forEach((key) => cycles.set(key, Math.round(cycle)));
+      });
+    });
+    return cycles;
+  }
+
+  function sheetPaymentCycleFor(merchantId, merchantName) {
+    for (const key of paymentCycleKeys(merchantId, merchantName)) {
+      const cycle = sheetPaymentCycles.get(key);
+      if (cycle > 0) return cycle;
+    }
+    return 0;
+  }
+
+  function explicitPaymentCycleFrom(source) {
+    if (!source) return 0;
+    const keys = [
+      "paymentCycle",
+      "payment_cycle",
+      "paymentCycleDays",
+      "payment_cycle_days",
+      "paymentTermDays",
+      "payment_terms_days",
+      "paymentTermsDays",
+      "paymentDelayDays",
+      "payoutDelayDays",
+      "netDays",
+      "net_days"
+    ];
+    for (const key of keys) {
+      const cycle = number(source[key]);
+      if (cycle > 0) return Math.round(cycle);
+    }
+    return 0;
+  }
+
+  function resolveOfferPaymentCycle(offer) {
+    const sheetCycle = sheetPaymentCycleFor(offer && offer.merchantId, offer && offer.brand);
+    if (sheetCycle > 0) return normalizePaymentCycle(sheetCycle, offer && offer.network);
+    return normalizePaymentCycle(null, offer && offer.network);
+  }
+
+  function inferRegionFromText(value) {
+    const text = String(value || "");
+    const match = text.match(/(?:^|[\s()[\]-])(US|USA|UK|GB|DE|FR|CA|AU)(?:$|[\s()[\]-])/i);
+    if (!match) return "";
+    return match[1];
+  }
+
+  function normalizeRegion(value) {
+    const text = String(value || "").trim().toUpperCase();
+    if (!text) return "";
+    if (text === "USA") return "US";
+    if (text === "GB") return "UK";
+    if (["US", "UK", "DE", "FR", "CA", "AU"].includes(text)) return text;
+    return text;
+  }
+
+  function paymentRegionFor(record, matchedOffer = {}) {
+    return normalizeRegion(
+      record.region ||
+      record.marketplace ||
+      record.marketPlace ||
+      record.market ||
+      record.country ||
+      record.countryCode ||
+      matchedOffer.region ||
+      matchedOffer.country ||
+      inferRegionFromText(record.merchantName || record.brand || matchedOffer.brand)
+    );
+  }
+
   function bestPaymentOffer(candidates) {
     return candidates
       .filter(Boolean)
@@ -771,10 +866,14 @@
   }
 
   function resolvePaymentCycle(record, matchedOffer, network) {
-    if (matchedOffer && matchedOffer.paymentCycle !== undefined && matchedOffer.paymentCycle !== null && matchedOffer.paymentCycle !== "") {
-      return normalizePaymentCycle(matchedOffer.paymentCycle, matchedOffer.network || network);
-    }
-    return normalizePaymentCycle(record && record.paymentCycle, network || (matchedOffer && matchedOffer.network));
+    const sheetCycle = sheetPaymentCycleFor(
+      (record && record.merchantId) || (matchedOffer && matchedOffer.merchantId),
+      (record && (record.merchantName || record.brand)) || (matchedOffer && matchedOffer.brand)
+    );
+    if (sheetCycle > 0) return normalizePaymentCycle(sheetCycle, (matchedOffer && matchedOffer.network) || network);
+    const apiCycle = explicitPaymentCycleFrom(record);
+    if (apiCycle > 0) return normalizePaymentCycle(apiCycle, network || (matchedOffer && matchedOffer.network));
+    return normalizePaymentCycle(null, network || (matchedOffer && matchedOffer.network));
   }
 
   function offerForMerchant(merchantId, merchantName) {
@@ -844,6 +943,7 @@
       merchantId: String(record.merchantId || "").trim(),
       merchantName: String(record.merchantName || record.brand || "").trim(),
       network,
+      region: paymentRegionFor(record, matchedOffer),
       tier: matchedOffer.tier || record.tier || "Unknown",
       category: record.category || matchedOffer.category || matchedOffer.levantaCategory || "Uncategorized",
       categoryPath: record.categoryPath || matchedOffer.categoryPath || "",
@@ -890,6 +990,7 @@
       merchantId,
       merchantName,
       network,
+      region: paymentRegionFor(source, offer),
       tier: source.tier || offer.tier || "Unknown",
       category: source.category || offer.category || offer.levantaCategory || "Uncategorized",
       categoryPath: source.categoryPath || offer.categoryPath || "",
@@ -1046,7 +1147,7 @@
       els.paymentSync.textContent = t("payments.syncing", "Syncing...");
     }
     try {
-      const response = await fetch("/api/levanta/payments?start=2026-03&end=2026-06", { cache: "no-store" });
+      const response = await fetch("/api/levanta/payments?start=2026-02&end=2026-06&marketplaces=US,UK,DE,FR", { cache: "no-store" });
       if (!response.ok) throw new Error(`Levanta API sync returned ${response.status}`);
       const payload = await response.json();
       if (!payload.records || !payload.records.length) throw new Error("Levanta API returned no payment records");
@@ -2050,7 +2151,7 @@
   function buildPaymentContext(rows, prompt) {
     state.lastRows = rows;
     const summary = updatePaymentSummary(rows);
-    summary.monthBreakdown = ["March", "April", "May", "June"].map((month) => monthStatus(month, rows));
+    summary.monthBreakdown = ACTIVE_PAYMENT_MONTHS.map((month) => monthStatus(month, rows));
     return { type: "payment", items: rows, summary, filters: { prompt } };
   }
 
@@ -2395,8 +2496,11 @@
       return {
         key: "commission",
         label: "Commission",
-        sortDescription: "commission made",
-        fields: [{ field: "affCommission", label: "Commission made", type: "money" }]
+        sortDescription: "AOV first, then commission made",
+        fields: [
+          { field: "aov", label: "AOV", type: "money" },
+          { field: "affCommission", label: "Commission made", type: "money" }
+        ]
       };
     }
     if (hasAov) {
@@ -2438,9 +2542,22 @@
     return parts.join(", ");
   }
 
+  function categoryForTopMetricPrompt(prompt) {
+    const phrase = cleanedCategoryPhrase(prompt)
+      .replace(/\b(?:epc|aov|commission|commissions|commisison|comission|affiliate|aff|made|amount|rate)\b/gi, " ")
+      .replace(/佣金|客单价|平均订单金额/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!phrase) return null;
+    const category = categoryForPrompt(prompt);
+    if (!category) return null;
+    if (normalize(category) === normalize(phrase) && !categoryAliases[category] && !uniqueCategoryValues().some((value) => normalize(value) === normalize(category))) return null;
+    return category;
+  }
+
   function topMetricOfferAnswer(prompt, request) {
     const tier = tierFromPrompt(prompt);
-    const category = categoryForPrompt(prompt);
+    const category = categoryForTopMetricPrompt(prompt);
     const includeBlack = /black|blocked|include black|黑名单|黑色|屏蔽|暂停/i.test(prompt);
     const metricFilters = extractMetricFilters(prompt);
     const requestedCount = requestedRecommendationCount(prompt, 5);
@@ -2523,7 +2640,7 @@
 
   function chatMonthText(value, language) {
     if (language !== "zh") return optionText(value);
-    const map = { March: "三月", April: "四月", May: "五月", June: "六月" };
+    const map = { February: "二月", March: "三月", April: "四月", May: "五月", June: "六月" };
     return map[value] || value || "";
   }
 
@@ -2872,12 +2989,12 @@
     const metricFilters = extractMetricFilters(prompt);
     const topMetricRequest = extractTopMetricRequest(prompt);
 
-    if (intent === "payment") {
-      return paymentAnswer(prompt);
-    }
-
     if (topMetricRequest) {
       return topMetricOfferAnswer(prompt, topMetricRequest);
+    }
+
+    if (intent === "payment") {
+      return paymentAnswer(prompt);
     }
 
     if (wantsRecommendation) {
@@ -3125,6 +3242,7 @@
       ["Merchant", (record) => record.merchantName || ""],
       ["Tier", (record) => record.tier || "Unknown"],
       ["Network", (record) => record.network || ""],
+      ["Region", (record) => record.region || ""],
       ["Category", (record) => displayCategory(record)],
       ["Main Category", (record) => record.mainCategory || ""],
       ["Subcategory", (record) => record.subCategory || ""],
@@ -3451,10 +3569,12 @@
   function refreshPaymentFilterOptions() {
     replaceSelectOptions(els.paymentMonth, "All months", uniquePaymentValues("reportMonth"), state.payments.month);
     replaceSelectOptions(els.paymentNetwork, "All networks", uniquePaymentValues("network"), state.payments.network);
+    replaceSelectOptions(els.paymentRegion, "All regions", uniquePaymentValues("region"), state.payments.region);
     replaceSelectOptions(els.paymentTier, "All tiers", uniquePaymentValues("tier"), state.payments.tier);
     replaceSelectOptions(els.paymentStatus, "All statuses", uniquePaymentValues("paymentStatus"), state.payments.status);
     state.payments.month = els.paymentMonth.value;
     state.payments.network = els.paymentNetwork.value;
+    state.payments.region = els.paymentRegion.value;
     state.payments.tier = els.paymentTier.value;
     state.payments.status = els.paymentStatus.value;
   }
@@ -3462,6 +3582,7 @@
   function syncPaymentControls() {
     els.paymentMonth.value = state.payments.month;
     els.paymentNetwork.value = state.payments.network;
+    els.paymentRegion.value = state.payments.region;
     els.paymentTier.value = state.payments.tier;
     els.paymentStatus.value = state.payments.status;
     els.paymentSearch.value = state.payments.search;
@@ -3475,12 +3596,13 @@
     return sortPaymentRows(getPaymentRecords()
       .filter((record) => state.payments.month === "all" || record.reportMonth === state.payments.month || record.reportMonthKey === state.payments.month)
       .filter((record) => state.payments.network === "all" || record.network === state.payments.network)
+      .filter((record) => state.payments.region === "all" || record.region === state.payments.region)
       .filter((record) => state.payments.tier === "all" || record.tier === state.payments.tier)
       .filter((record) => state.payments.status === "all" || record.paymentStatus === state.payments.status)
       .filter((record) => !state.payments.unpaidOnly || record.paymentStatus === "Unpaid")
       .filter((record) => !state.payments.pendingOnly || record.paymentStatus === "Pending")
       .filter((record) => !state.payments.overdueOnly || isPaymentOverdue(record))
-      .filter((record) => !search || normalize(`${record.merchantName} ${record.merchantId}`).includes(search)));
+      .filter((record) => !search || normalize(`${record.merchantName} ${record.merchantId} ${record.region || ""}`).includes(search)));
   }
 
   function renderPaymentSummary(rows) {
@@ -3504,6 +3626,7 @@
         <td>${escapeHtml(record.merchantId || "")}</td>
         <td><strong>${escapeHtml(record.merchantName || "")}</strong><p>${escapeHtml(displayCategory(record))}</p></td>
         <td>${escapeHtml(record.network || "")}</td>
+        <td>${escapeHtml(record.region || "-")}</td>
         <td><span class="badge tier">${escapeHtml(record.tier || "Unknown")}</span></td>
         <td>${escapeHtml(`${optionText(record.reportMonth)} ${record.reportYear}`)}</td>
         <td><span class="badge ${paymentStatusClass(record.paymentStatus)}">${escapeHtml(statusText(record.paymentStatus || "Unknown"))}</span></td>
@@ -4093,6 +4216,7 @@
     els.tierSheetHead.addEventListener("click", handleReportSortClick);
     els.paymentMonth.addEventListener("change", () => { state.payments.month = els.paymentMonth.value; renderPaymentsPage(); });
     els.paymentNetwork.addEventListener("change", () => { state.payments.network = els.paymentNetwork.value; renderPaymentsPage(); });
+    els.paymentRegion.addEventListener("change", () => { state.payments.region = els.paymentRegion.value; renderPaymentsPage(); });
     els.paymentTier.addEventListener("change", () => { state.payments.tier = els.paymentTier.value; renderPaymentsPage(); });
     els.paymentStatus.addEventListener("change", () => { state.payments.status = els.paymentStatus.value; renderPaymentsPage(); });
     els.paymentSearch.addEventListener("input", () => { state.payments.search = els.paymentSearch.value; renderPaymentsPage(); });

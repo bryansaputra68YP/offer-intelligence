@@ -6,8 +6,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 
 from server import (
-    fetch_invoice_items,
+    fetch_invoice_items_for_marketplaces,
     has_payable_payment_amount,
+    marketplaces_from_query,
     months_from_query,
     normalize_invoice_item,
     payment_summary,
@@ -35,11 +36,12 @@ class handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         months = months_from_query(query)
+        marketplaces = marketplaces_from_query(query)
         records = []
         try:
             for month_name, zero_based_month, year in months:
-                for item in fetch_invoice_items(zero_based_month, year, api_key):
-                    records.append(normalize_invoice_item(item, month_name, zero_based_month, year))
+                for item, marketplace in fetch_invoice_items_for_marketplaces(zero_based_month, year, api_key, marketplaces):
+                    records.append(normalize_invoice_item(item, month_name, zero_based_month, year, marketplace))
         except HTTPError as error:
             body = error.read().decode("utf-8", "replace")[:500]
             self.send_json(error.code, {"ok": False, "source": "levanta-api", "error": body})
@@ -56,6 +58,7 @@ class handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "source": "levanta-api",
                 "checkedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "marketplaces": marketplaces,
                 "records": records,
                 "summary": payment_summary(records),
             },

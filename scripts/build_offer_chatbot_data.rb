@@ -110,6 +110,56 @@ def normalized_payment_cycle(payment_cycle, network)
   cycle.positive? ? cycle.round : 60
 end
 
+def explicit_payment_cycle_from(hash)
+  %w[
+    paymentCycle
+    payment_cycle
+    paymentCycleDays
+    payment_cycle_days
+    paymentTermDays
+    payment_terms_days
+    paymentTermsDays
+    paymentDelayDays
+    payoutDelayDays
+    netDays
+    net_days
+  ].each do |key|
+    cycle = num(hash[key])
+    return cycle.round if cycle.to_f.positive?
+  end
+  nil
+end
+
+def infer_region_from_text(value)
+  aliases = { "USA" => "US", "GB" => "UK" }
+  value.to_s.split(/[\s_()\[\]-]+/).reverse_each do |part|
+    clean = part.upcase.gsub(/[^A-Z]/, "")
+    clean = aliases.fetch(clean, clean)
+    return clean if %w[US UK DE FR CA AU].include?(clean)
+  end
+  nil
+end
+
+def normalize_region(value)
+  text = value.to_s.strip.upcase
+  return nil if text.empty?
+  return "US" if text == "USA"
+  return "UK" if text == "GB"
+  text
+end
+
+def region_from_hash(hash, fallback_name = nil)
+  region = clean_text(hash["region"]) ||
+           clean_text(hash["marketplace"]) ||
+           clean_text(hash["marketPlace"]) ||
+           clean_text(hash["marketplaceCode"]) ||
+           clean_text(hash["country"]) ||
+           clean_text(hash["countryCode"]) ||
+           clean_text(hash["COUNTRY"]) ||
+           infer_region_from_text(fallback_name)
+  normalize_region(region)
+end
+
 def payment_month_key(year, month_name)
   month_number = MONTH_NUMBERS[month_name.to_s]
   return nil unless year && month_number
@@ -308,7 +358,10 @@ offers = CSV.read(brand_csv, headers: true).map do |row|
   recommendation = clean_text(row["recommendation"]) || clean_text(sheet_block["Recommendation"])
   recommended_link = clean_text(sheet_block["Recommended Link"])
   phase = clean_text(sheet_block["Phase"])
-  payment_cycle = normalized_payment_cycle(num(sheet_block["Payment Cycle"]), network)
+  sheet_payment_cycle = num(sheet_block["Payment Cycle"])
+  payment_cycle_source = sheet_payment_cycle.to_f.positive? ? "google_sheet" : "network_default"
+  payment_cycle = normalized_payment_cycle(sheet_payment_cycle, network)
+  region = region_from_hash(row, row["brand"]) || region_from_hash(sheet_block, row["brand"])
   success_rate = num(sheet_block["Success Rate"])
   success_rate_june = num(sheet_block["Success Rate June"])
   publisher_count = clean_text(sheet_block["Publisher Count"])
@@ -343,6 +396,7 @@ offers = CSV.read(brand_csv, headers: true).map do |row|
     "merchantId" => mid,
     "brand" => row["brand"],
     "network" => network.to_s.strip.empty? ? "Unknown" : network,
+    "region" => region,
     "category" => category,
     "categoryPath" => category_path,
     "mainCategory" => feishu_cat&.fetch("mainCategory", nil),
@@ -378,6 +432,7 @@ offers = CSV.read(brand_csv, headers: true).map do |row|
     "timeline" => clean_text(row["timeline"]),
     "phase" => phase,
     "paymentCycle" => payment_cycle,
+    "paymentCycleSource" => payment_cycle_source,
     "publisherCount" => publisher_count,
     "successRate" => round(success_rate, 6),
     "publisherCountJune" => publisher_count_june,
@@ -418,7 +473,8 @@ payment_records = invoice_rows.map do |row|
   commission = num(row["total_commission"] || row["commission"])
   expected = commission
   raw_status = row["raw_status"] || row["payment_status"]
-  payment_cycle = normalized_payment_cycle(matched_offer&.fetch("paymentCycle", nil), matched_offer&.fetch("network", nil) || "Levanta")
+  source_cycle = matched_offer&.fetch("paymentCycleSource", nil) == "google_sheet" ? matched_offer&.fetch("paymentCycle", nil) : explicit_payment_cycle_from(row)
+  payment_cycle = normalized_payment_cycle(source_cycle, matched_offer&.fetch("network", nil) || "Levanta")
   availability = payment_availability_date(report_year, report_month, payment_cycle)
   baseline_availability = payment_availability_date(report_year, report_month, 60)
   paid_amount = raw_status.to_s.downcase == "paid" ? expected : 0.0
@@ -444,6 +500,7 @@ payment_records = invoice_rows.map do |row|
     "merchantId" => matched_offer&.fetch("merchantId", nil) || row["brand_id"],
     "merchantName" => brand_name,
     "network" => matched_offer&.fetch("network", nil) || "Levanta",
+    "region" => region_from_hash(row, matched_offer&.fetch("brand", nil) || brand_name),
     "tier" => matched_offer&.fetch("tier", nil) || "Unknown",
     "category" => matched_offer&.fetch("category", nil) || "Uncategorized",
     "categoryPath" => matched_offer&.fetch("categoryPath", nil),

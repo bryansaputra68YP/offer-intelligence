@@ -18,13 +18,16 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "public"
 DATA_FILE = STATIC_DIR / "chatbot_data.js"
+SHEET_DATA_FILE = STATIC_DIR / "sheet_report_data.js"
 LEVANTA_BASE = "https://app.levanta.io/api/creator/v1"
 DEFAULT_MONTHS = [
+    ("February", 1, 2026),
     ("March", 2, 2026),
     ("April", 3, 2026),
     ("May", 4, 2026),
     ("June", 5, 2026),
 ]
+DEFAULT_MARKETPLACES = ["US", "UK", "DE", "FR"]
 MONTH_NAMES = [
     "January",
     "February",
@@ -61,6 +64,15 @@ def first_present_number(source, keys):
             continue
         return money(value)
     return None
+
+
+def first_present_string(source, keys):
+    for key in keys:
+        value = source.get(key) if isinstance(source, dict) else None
+        if value is None or value == "":
+            continue
+        return str(value).strip()
+    return ""
 
 
 def levanta_revenue_made(item):
@@ -157,6 +169,126 @@ def load_static_data():
 STATIC_DATA, OFFERS_BY_ID, OFFERS_BY_BRAND, STATIC_OFFERS = load_static_data()
 
 
+def load_sheet_payment_cycles():
+    if not SHEET_DATA_FILE.exists():
+        return {}
+    text = SHEET_DATA_FILE.read_text(encoding="utf-8")
+    prefix = "window.SHEET_REPORT_DATA="
+    if not text.startswith(prefix):
+        return {}
+    payload = json.loads(text[len(prefix) :].rstrip(";\n"))
+    cycles = {}
+    for sheet in payload.get("sheets", []):
+        for row in sheet.get("rows", []):
+            cycle = number(row.get("Payment Cycle"))
+            if cycle <= 0:
+                continue
+            for key in payment_cycle_keys(
+                row.get("Merchant ID") or row.get("Merchant Id") or row.get("merchantId"),
+                row.get("Merchant Name") or row.get("Brand") or row.get("brand"),
+            ):
+                cycles[key] = int(round(cycle))
+    return cycles
+
+
+def payment_cycle_keys(merchant_id, merchant_name):
+    keys = []
+    clean_id = str(merchant_id or "").strip()
+    clean_name = normalize(merchant_name)
+    if clean_id:
+        keys.append(f"id:{clean_id}")
+    if clean_name:
+        keys.append(f"name:{clean_name}")
+    return keys
+
+
+SHEET_PAYMENT_CYCLES = load_sheet_payment_cycles()
+
+
+def sheet_payment_cycle_for(merchant_id, merchant_name):
+    for key in payment_cycle_keys(merchant_id, merchant_name):
+        cycle = SHEET_PAYMENT_CYCLES.get(key)
+        if cycle and cycle > 0:
+            return cycle
+    return 0
+
+
+def explicit_payment_cycle_from(source):
+    keys = (
+        "paymentCycle",
+        "payment_cycle",
+        "paymentCycleDays",
+        "payment_cycle_days",
+        "paymentTermDays",
+        "payment_terms_days",
+        "paymentTermsDays",
+        "paymentDelayDays",
+        "payoutDelayDays",
+        "netDays",
+        "net_days",
+    )
+    for key in keys:
+        cycle = number(source.get(key) if isinstance(source, dict) else None)
+        if cycle > 0:
+            return int(round(cycle))
+    return 0
+
+
+def resolve_payment_cycle(record, offer, network):
+    sheet_cycle = sheet_payment_cycle_for(
+        (record or {}).get("merchantId") or (record or {}).get("brand_id") or (offer or {}).get("merchantId"),
+        (record or {}).get("merchantName") or (record or {}).get("brand") or (offer or {}).get("brand"),
+    )
+    if sheet_cycle > 0:
+        return normalized_payment_cycle(sheet_cycle, (offer or {}).get("network") or network)
+    api_cycle = explicit_payment_cycle_from(record or {})
+    if api_cycle > 0:
+        return normalized_payment_cycle(api_cycle, network or (offer or {}).get("network"))
+    return normalized_payment_cycle(None, network or (offer or {}).get("network"))
+
+
+def infer_region_from_text(value):
+    parts = str(value or "").replace("-", " ").replace("_", " ").replace("(", " ").replace(")", " ").split()
+    aliases = {"USA": "US", "GB": "UK"}
+    for part in reversed(parts):
+        clean = "".join(ch for ch in part.upper() if ch.isalpha())
+        clean = aliases.get(clean, clean)
+        if clean in {"US", "UK", "DE", "FR", "CA", "AU"}:
+            return clean
+    return ""
+
+
+def normalize_region(value):
+    text = str(value or "").strip().upper()
+    if text == "USA":
+        return "US"
+    if text == "GB":
+        return "UK"
+    return text
+
+
+def region_from_item(item, marketplace, offer=None):
+    brand = item.get("brand") if isinstance(item.get("brand"), dict) else {}
+    region = first_present_string(
+        item,
+        (
+            "region",
+            "marketplace",
+            "marketPlace",
+            "marketplaceCode",
+            "country",
+            "countryCode",
+            "locale",
+        ),
+    ) or first_present_string(brand, ("region", "marketplace", "country", "countryCode"))
+    region = normalize_region(region)
+    if region and region != "ALL":
+        return region
+    if marketplace and str(marketplace).lower() != "all":
+        return normalize_region(marketplace)
+    return normalize_region(infer_region_from_text((offer or {}).get("brand") or brand.get("name")))
+
+
 def offer_for_payment(merchant_id, merchant_name):
     clean_id = str(merchant_id or "").strip()
     if clean_id and clean_id in OFFERS_BY_ID:
@@ -234,13 +366,14 @@ def pending_placeholder_record(source, month_name, zero_based_month, year):
     merchant_name = str(source.get("merchantName") or source.get("brand") or merchant_id or "Unknown merchant").strip()
     offer = offer_for_payment(merchant_id, merchant_name)
     network = source.get("network") or offer.get("network") or "Levanta"
-    payment_cycle = normalized_payment_cycle(offer.get("paymentCycle") or source.get("paymentCycle"), offer.get("network") or network)
+    payment_cycle = resolve_payment_cycle(source, offer, network)
     month_key = f"{year}-{zero_based_month + 1:02d}"
     return {
         "id": f"{merchant_id or normalize(merchant_name)}::{month_key}::pending-placeholder",
         "merchantId": merchant_id,
         "merchantName": merchant_name,
         "network": network,
+        "region": source.get("region") or region_from_item(source, source.get("marketplace"), offer),
         "tier": source.get("tier") or offer.get("tier") or "Unknown",
         "category": source.get("category") or offer.get("category") or offer.get("levantaCategory") or "Uncategorized",
         "categoryPath": source.get("categoryPath") or offer.get("categoryPath"),
@@ -316,13 +449,13 @@ def levanta_get(path, params, api_key):
     raise URLError(last_error[:500])
 
 
-def fetch_invoice_items(month, year, api_key):
+def fetch_invoice_items(month, year, api_key, marketplace="all"):
     cursor = None
     items = []
     while True:
         params = {
             "limit": 100,
-            "marketplace": "all",
+            "marketplace": str(marketplace or "all").lower(),
             "month": month,
             "year": year,
         }
@@ -336,8 +469,42 @@ def fetch_invoice_items(month, year, api_key):
     return items
 
 
+def marketplaces_from_query(query):
+    raw = ",".join(query.get("marketplaces", []) + query.get("marketplace", []))
+    if not raw:
+        return DEFAULT_MARKETPLACES
+    values = [normalize_region(part) for part in raw.replace("|", ",").split(",")]
+    values = [value for value in values if value]
+    if not values or "ALL" in values:
+        return ["all"]
+    return values
+
+
+def fetch_invoice_items_for_marketplaces(month, year, api_key, marketplaces):
+    if marketplaces == ["all"]:
+        return [(item, "all") for item in fetch_invoice_items(month, year, api_key, "all")]
+
+    rows = []
+    errors = []
+    for marketplace in marketplaces:
+        try:
+            rows.extend((item, marketplace) for item in fetch_invoice_items(month, year, api_key, marketplace))
+        except HTTPError as error:
+            errors.append(error)
+
+    if rows:
+        return rows
+
+    try:
+        return [(item, "all") for item in fetch_invoice_items(month, year, api_key, "all")]
+    except HTTPError:
+        if errors:
+            raise errors[0]
+        raise
+
+
 def months_from_query(query):
-    start = query.get("start", ["2026-03"])[0]
+    start = query.get("start", ["2026-02"])[0]
     end = query.get("end", ["2026-06"])[0]
     try:
         start_year, start_month = [int(part) for part in start.split("-", 1)]
@@ -356,7 +523,7 @@ def months_from_query(query):
     return months[:18]
 
 
-def normalize_invoice_item(item, month_name, zero_based_month, year):
+def normalize_invoice_item(item, month_name, zero_based_month, year, marketplace="all"):
     brand = item.get("brand") or {}
     levanta_brand_id = str(brand.get("id") or "").strip()
     merchant_name = str(brand.get("name") or "").strip()
@@ -368,7 +535,7 @@ def normalize_invoice_item(item, month_name, zero_based_month, year):
     raw = str(item.get("status") or "unknown")
     paid = expected if raw.lower() == "paid" else money(item.get("paidAmount"))
     remaining = max(0.0, money(expected - paid))
-    payment_cycle = normalized_payment_cycle(offer.get("paymentCycle"), offer.get("network") or "Levanta")
+    payment_cycle = resolve_payment_cycle({**item, "merchantId": merchant_id, "merchantName": merchant_name}, offer, offer.get("network") or "Levanta")
     available = availability_date(year, zero_based_month, payment_cycle)
     baseline_available = availability_date(year, zero_based_month, 60)
     month_key = f"{year}-{zero_based_month + 1:02d}"
@@ -386,6 +553,7 @@ def normalize_invoice_item(item, month_name, zero_based_month, year):
         "levantaBrandId": levanta_brand_id,
         "merchantName": merchant_name,
         "network": "Levanta",
+        "region": region_from_item(item, marketplace, offer),
         "tier": offer.get("tier") or "Unknown",
         "category": offer.get("category") or offer.get("levantaCategory") or "Uncategorized",
         "categoryPath": offer.get("categoryPath"),
@@ -465,11 +633,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         query = parse_qs(parsed.query)
         months = months_from_query(query)
+        marketplaces = marketplaces_from_query(query)
         records = []
         try:
             for month_name, zero_based_month, year in months:
-                for item in fetch_invoice_items(zero_based_month, year, api_key):
-                    records.append(normalize_invoice_item(item, month_name, zero_based_month, year))
+                for item, marketplace in fetch_invoice_items_for_marketplaces(zero_based_month, year, api_key, marketplaces):
+                    records.append(normalize_invoice_item(item, month_name, zero_based_month, year, marketplace))
         except HTTPError as error:
             body = error.read().decode("utf-8", "replace")[:500]
             self.send_json(error.code, {"ok": False, "source": "levanta-api", "error": body})
@@ -486,6 +655,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "source": "levanta-api",
                 "checkedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "marketplaces": marketplaces,
                 "records": records,
                 "summary": payment_summary(records),
             },
