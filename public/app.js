@@ -4790,6 +4790,78 @@
     return text || fallback;
   }
 
+  function titleCaseFilePart(value) {
+    return String(value || "")
+      .replace(/[_-]+/g, " ")
+      .replace(/[^\p{L}\p{N}&+ ]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .split(" ")
+      .map((word) => {
+        if (/^(aov|epc|cvr|asin|us|uk|fr|de)$/i.test(word)) return word.toUpperCase();
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      })
+      .join(" ");
+  }
+
+  function categoryFilenameLabel(category) {
+    const text = String(category || "").trim();
+    const labels = {
+      "Beauty & Personal Care": "Beauty",
+      "Pet Supplies": "Pet",
+      "Clothing, Shoes & Jewelry": "Shoes",
+      "Patio, Lawn & Garden": "Patio Lawn Garden",
+      "Sports & Outdoors": "Sports Outdoors",
+      "Home & Kitchen": "Home Kitchen",
+      "Health & Household": "Health Household",
+      "Grocery & Gourmet Food": "Grocery",
+      "Cell Phones & Accessories": "Cell Phones",
+      "Tools & Home Improvement": "Tools Home Improvement"
+    };
+    return labels[text] || titleCaseFilePart(text.replace(/\s*&\s*/g, " "));
+  }
+
+  function chatbotOfferDescriptor(context = {}) {
+    const parts = [];
+    if (context.category) parts.push(categoryFilenameLabel(context.category));
+    else if (context.keyword) parts.push(titleCaseFilePart(context.keyword));
+    else if (context.tier) parts.push(titleCaseFilePart(context.tier));
+    else if (context.paymentCycleFilter) parts.push("Payment Cycle");
+
+    if (context.ranking && !parts.some((part) => normalize(part).includes(normalize(context.ranking)))) {
+      parts.push(titleCaseFilePart(context.ranking));
+    }
+
+    const descriptor = parts
+      .map((part) => titleCaseFilePart(part))
+      .filter(Boolean)
+      .filter((part, index, list) => list.findIndex((item) => normalize(item) === normalize(part)) === index)
+      .join(" ");
+    return descriptor;
+  }
+
+  function todayDownloadDateStamp() {
+    const date = PAYMENT_TODAY instanceof Date && !Number.isNaN(PAYMENT_TODAY.valueOf()) ? PAYMENT_TODAY : new Date();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${month}-${day}-${date.getFullYear()}`;
+  }
+
+  function safeDownloadFilename(value) {
+    return String(value || "download.xlsx")
+      .replace(/[<>:"/\\|?*]+/g, "-")
+      .replace(/\s+/g, " ")
+      .replace(/\s+-\s+/g, "-")
+      .trim();
+  }
+
+  function chatbotOfferDownloadFilename(context = {}, requestedCount = 0) {
+    const count = Math.max(1, Math.floor(number(requestedCount) || number(context.exportCount) || 1));
+    const descriptor = chatbotOfferDescriptor(context);
+    const descriptorPart = descriptor ? `${descriptor} ` : "";
+    return safeDownloadFilename(`Yeahpromos_Top ${count} ${descriptorPart}Offers ${todayDownloadDateStamp()}.xlsx`);
+  }
+
   function safeSheetName(value) {
     const name = String(value || "Export").replace(/[\[\]:*?/\\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 31);
     return name || "Export";
@@ -4806,15 +4878,17 @@
     const scope = context.exportScope || context.category || context.tier || "top";
     const prefix = context.filePrefix || (type === "payments" ? "payment_records" : type === "sheet" ? "sheet_records" : "offer_recommendations");
     const rowLabel = type === "payments" ? "records" : type === "sheet" ? "rows" : "offers";
-    const columns = context.downloadColumns || (type === "payments" ? paymentExportColumns() : recommendationExportColumns());
-    const sheetName = context.sheetName || (type === "payments" ? "Payments" : type === "sheet" ? "Sheet Records" : "Recommendations");
+    const columns = context.downloadColumns || (type === "payments" ? paymentExportColumns() : type === "offers" ? chatbotOfferExportColumns() : recommendationExportColumns());
+    const sheetName = type === "offers" ? "offer list" : context.sheetName || (type === "payments" ? "Payments" : type === "sheet" ? "Sheet Records" : "Recommendations");
     state.recommendationDownloads[id] = {
       rows,
       context: { ...context, columns, sheetName },
       requestedCount,
       columns,
       sheetName,
-      filename: `${prefix}_${safeFilePart(scope)}_${rows.length}_${rowLabel}_${today}.xlsx`
+      filename: context.filename || (type === "offers"
+        ? chatbotOfferDownloadFilename({ ...context, exportScope: scope, exportCount: rows.length }, requestedCount)
+        : `${prefix}_${safeFilePart(scope)}_${rows.length}_${rowLabel}_${today}.xlsx`)
     };
     return id;
   }
@@ -4867,6 +4941,18 @@
       ["Why Recommended", (offer, index, context) => whyRecommended(offer, context)],
       ["Best Traffic Angle", (offer, index, context) => bestAngle(offer, context)],
       ["Caution", (offer, index, context) => caution(offer, context.language || state.language)]
+    ];
+  }
+
+  function chatbotOfferExportColumns() {
+    return [
+      ["Merchant ID", (offer) => offer.merchantId || ""],
+      ["Name", (offer) => offer.brand || offer.merchantName || ""],
+      ["AOV", (offer) => number(offer.aov)],
+      ["Commission Rate", (offer) => shortPct(offer.commissionRate)],
+      ["Payment Cycle", (offer) => offer.paymentCycle || ""],
+      ["Main Category", (offer) => offer.mainCategory || ""],
+      ["Subcategory", (offer) => offer.subCategory || ""]
     ];
   }
 
@@ -6651,6 +6737,7 @@
       answerPrompt,
       currentContext: () => state.currentContext,
       currentRecommendationBundle: () => state.activeRecommendationBundle,
+      recommendationDownloads: () => state.recommendationDownloads,
       excludedRecommendationKeys: () => Array.from(state.excludedRecommendationKeys),
       rankedRecommendations,
       displayCategory,

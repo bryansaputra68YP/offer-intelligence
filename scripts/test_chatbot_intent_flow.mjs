@@ -176,6 +176,22 @@ assertEqual(bundle.gaps.length, 1, "bundle should report a shortage when candida
 assertEqual(bundle.gaps[0].tier, "Tier 1", "shortage should identify the tier");
 assertEqual(bundle.gaps[0].gap, 55, "shortage should report the missing count");
 
+hooks.answerPrompt("top 10 beauty offers");
+const recommendationDownloads = Object.values(hooks.recommendationDownloads());
+const latestDownload = recommendationDownloads[recommendationDownloads.length - 1];
+assertTruthy(latestDownload, "top 10 beauty offers should register a chatbot download");
+assertMatch(
+  latestDownload.filename,
+  /^Yeahpromos_Top 10 Beauty Offers \d{2}-\d{2}-\d{4}\.xlsx$/,
+  "chatbot offer download filename should include request count, descriptor, and date"
+);
+assertEqual(latestDownload.sheetName, "offer list", "chatbot offer download sheet should always be named offer list");
+assertEqual(
+  latestDownload.columns.map(([header]) => header).join("|"),
+  "Merchant ID|Name|AOV|Commission Rate|Payment Cycle|Main Category|Subcategory",
+  "chatbot offer download should use compact offer columns"
+);
+
 const paymentRows = hooks.getPaymentRecords();
 const paymentMonthCounts = paymentRows.reduce((counts, record) => {
   counts[record.reportMonth] = (counts[record.reportMonth] || 0) + 1;
