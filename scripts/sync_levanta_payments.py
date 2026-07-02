@@ -45,19 +45,22 @@ def month_key(month: tuple[str, int, int]) -> str:
 
 def fetch_payment_records(months: list[tuple[str, int, int]], api_key: str) -> list[dict]:
     records = []
+    marketplaces = server.DEFAULT_MARKETPLACES
     for month_name, zero_based_month, year in months:
-        items = server.fetch_invoice_items(zero_based_month, year, api_key)
-        print(f"Fetched {len(items)} Levanta invoice items for {month_name} {year}")
-        for item in items:
-            records.append(server.normalize_invoice_item(item, month_name, zero_based_month, year))
+        rows = server.fetch_invoice_items_for_marketplaces(zero_based_month, year, api_key, marketplaces)
+        print(f"Fetched {len(rows)} Levanta invoice items for {month_name} {year} across {', '.join(marketplaces)}")
+        for item, marketplace in rows:
+            records.append(server.normalize_invoice_item(item, month_name, zero_based_month, year, marketplace))
     return records
 
 
-def source_url_with_window(source_url: str, start: str, end: str) -> str:
+def source_url_with_window(source_url: str, start: str = "", end: str = "") -> str:
     parts = urlsplit(source_url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    query["start"] = start
-    query["end"] = end
+    if start:
+        query["start"] = start
+    if end:
+        query["end"] = end
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
@@ -94,32 +97,25 @@ def validate_payment_records(records: list[dict], months: list[tuple[str, int, i
         raise ValueError("Levanta sync produced no payment records; refusing to overwrite static data")
 
     counts_by_key = collections.Counter(record.get("reportMonthKey") for record in records)
-    placeholders_by_key = collections.Counter(
-        record.get("reportMonthKey") for record in records if record.get("isPlaceholder")
-    )
-    missing = [month_key(month) for month in months if counts_by_key[month_key(month)] == 0]
-    if missing:
-        raise ValueError(f"Levanta sync is missing payment rows for {', '.join(missing)}; refusing to overwrite static data")
-
-    invalid_pending = [
+    zero_amount = [
         record
         for record in records
-        if record.get("isPlaceholder") and str(record.get("paymentStatus") or "").lower() != "pending"
+        if server.number(record.get("revenueMade")) <= 0 and server.number(record.get("commissionMade")) <= 0
     ]
-    if invalid_pending:
-        raise ValueError("Pending placeholder validation failed; refusing to overwrite static data")
+    if zero_amount:
+        raise ValueError("Payment sync produced zero revenue/commission records after filtering")
 
     return {
         "recordCount": len(records),
         "countsByMonth": dict(sorted(counts_by_key.items())),
-        "placeholdersByMonth": dict(sorted(placeholders_by_key.items())),
+        "zeroRowsRemoved": True,
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fetch Levanta payments and update public/chatbot_data.js.")
-    parser.add_argument("--start", default="2026-03", help="First report month, formatted YYYY-MM.")
-    parser.add_argument("--end", default="2026-06", help="Last report month, formatted YYYY-MM.")
+    parser.add_argument("--start", default="", help="Optional first report month, formatted YYYY-MM. Empty uses server/API default.")
+    parser.add_argument("--end", default="", help="Optional last report month, formatted YYYY-MM. Empty uses server/API default.")
     parser.add_argument("--data-file", default=str(ROOT / "public" / "chatbot_data.js"), help="Path to chatbot_data.js.")
     parser.add_argument(
         "--source-url",
@@ -134,7 +130,14 @@ def main() -> int:
     args = parse_args()
     data_file = Path(args.data_file)
     payload = read_chatbot_payload(data_file)
-    months = server.months_from_query({"start": [args.start], "end": [args.end]})
+    query = {}
+    if args.start:
+        query["start"] = [args.start]
+    if args.end:
+        query["end"] = [args.end]
+    months = server.months_from_query(query)
+    window_start = f"{months[0][2]}-{months[0][1] + 1:02d}"
+    window_end = f"{months[-1][2]}-{months[-1][1] + 1:02d}"
 
     source_url = str(args.source_url or "").strip()
     checked_at = ""
@@ -158,9 +161,9 @@ def main() -> int:
     payload["paymentRecords"] = records
     payload.setdefault("summary", {})["paymentSummary"] = server.payment_summary(records)
     payload["summary"]["paymentLastCheckedAt"] = checked_at
-    payload["summary"]["paymentSyncWindow"] = {"start": args.start, "end": args.end}
+    payload["summary"]["paymentSyncWindow"] = {"start": window_start, "end": window_end}
     payload.setdefault("sources", {})["payments"] = (
-        f"Vercel Levanta API {args.start}..{args.end}" if source_url else f"Levanta API {args.start}..{args.end}"
+        f"Vercel Levanta API {window_start}..{window_end}" if source_url else f"Levanta API {window_start}..{window_end}"
     )
 
     print(json.dumps({"checkedAt": checked_at, **validation}, ensure_ascii=False, indent=2))

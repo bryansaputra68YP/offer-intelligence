@@ -38,6 +38,13 @@ def main() -> int:
     with_placeholders = server.with_pending_placeholders(records, server.DEFAULT_MONTHS)
     trackable = [record for record in with_placeholders if server.is_trackable_payment_record(record)]
     trackable_ids = {record.get("id") for record in trackable}
+    assert_true(server.DEFAULT_MONTHS[0][0] == "February", "server/API default payment window should start in February")
+    assert_true("CA" in server.DEFAULT_MARKETPLACES, "server/API default marketplaces should include Canada")
+    assert_true(server.normalize_region("amazon.com") == "US", "amazon.com should normalize to US")
+    assert_true(server.normalize_region("Amazon.ca") == "CA", "Amazon.ca should normalize to CA for Levanta API calls")
+    assert_true(server.normalize_region("amazon.co.uk") == "UK", "amazon.co.uk should normalize to UK")
+    assert_true(server.normalize_region("amazon.FR") == "FR", "amazon.FR should normalize to FR")
+    assert_true(server.normalize_region("amazon.DE") == "DE", "amazon.DE should normalize to DE")
 
     placeholder_months = collections.Counter(
         record.get("reportMonth") for record in with_placeholders if record.get("isPlaceholder")
@@ -46,13 +53,17 @@ def main() -> int:
 
     assert_true(placeholder_months["May"] > 0, "May pending placeholders should be generated")
     assert_true(placeholder_months["June"] > 0, "June pending placeholders should be generated")
-    assert_true(trackable_months["May"] > 0, "May pending placeholders should survive payment filtering")
-    assert_true(trackable_months["June"] > 0, "June pending placeholders should survive payment filtering")
+    assert_true(trackable_months["May"] > 0, "May payment rows with revenue or commission should survive filtering")
+    assert_true(trackable_months["June"] > 0, "June payment rows with revenue or commission should survive filtering")
 
     sample_placeholder = next(record for record in with_placeholders if record.get("isPlaceholder") and record.get("reportMonth") == "May")
     assert_true(not server.has_payable_payment_amount(sample_placeholder), "sample placeholder should have zero payable amount")
-    assert_true(server.is_trackable_payment_record(sample_placeholder), "zero-amount pending placeholder should be trackable")
-    assert_true(sample_placeholder.get("id") in trackable_ids, "sample placeholder should remain in filtered records")
+    assert_true(not server.is_trackable_payment_record(sample_placeholder), "zero revenue/commission placeholder should not be trackable")
+    assert_true(sample_placeholder.get("id") not in trackable_ids, "sample placeholder should be removed from filtered records")
+    assert_true(
+        all(server.number(record.get("revenueMade")) > 0 or server.number(record.get("commissionMade")) > 0 for record in trackable),
+        "filtered payment records should all have revenue or commission",
+    )
 
     expected_renpho_ids = {
         "RENPHO Group": "362938",

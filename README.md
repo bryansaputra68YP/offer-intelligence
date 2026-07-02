@@ -105,7 +105,9 @@ Payment records come from Levanta invoice data and should be attributed to Levan
 The payment page focuses on payment follow-up fields only. The payment table and downloadable payment XLSX do not include the old Notes column.
 
 - Payment table columns show merchant ID, merchant name/category, network, tier, month, status, revenue made, commission made, payment cycle, expected payment date, and last checked date.
+- Payment rows where both revenue made and commission made are `0` are excluded from the payment page, chatbot responses, live API payload, and payment XLSX exports.
 - Payment XLSX columns match the follow-up workflow: merchant, tier, network, category, month/status, revenue/commission, paid/remaining amount, payment cycle days, expected payment date, and last checked.
+- Payment amount display uses `$` for US/default rows, `€` for DE/FR or EUR rows, and `£` for UK/GBP rows.
 - Notes are still allowed inside source records for internal calculation or status text, but they are not rendered as a payment-section column or exported payment column.
 
 ### Dashboard Offer List
@@ -180,4 +182,3 @@ python -m scripts.test_payment_placeholders
 ## Security
 
 Do not commit `.env`, API keys, logs, or PID files. The server reads the Levanta key from the environment only.
-

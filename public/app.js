@@ -39,7 +39,7 @@
   const PAYMENT_TODAY = new Date(`${localDateKey(new Date())}T00:00:00`);
   const originalTierSheetRows = new Map();
   const originalTierSheetRowIndex = new Map();
-  let paymentRecords = withPendingPaymentPlaceholders((data.paymentRecords || []).map(normalizePaymentRecord));
+  let paymentRecords = visiblePaymentRecords(withPendingPaymentPlaceholders((data.paymentRecords || []).map(normalizePaymentRecord)));
   const paymentRecordsByMerchant = new Map();
   rebuildPaymentIndex();
 
@@ -69,8 +69,6 @@
       tier: "all",
       status: "all",
       search: "",
-      unpaidOnly: false,
-      pendingOnly: false,
       overdueOnly: false
     },
     selectedTierPage: "Tier 1",
@@ -200,8 +198,6 @@
     paymentTier: document.getElementById("paymentTierFilter"),
     paymentStatus: document.getElementById("paymentStatusFilter"),
     paymentSearch: document.getElementById("paymentSearch"),
-    paymentUnpaidOnly: document.getElementById("paymentUnpaidOnly"),
-    paymentPendingOnly: document.getElementById("paymentPendingOnly"),
     paymentOverdueOnly: document.getElementById("paymentOverdueOnly"),
     languageToggle: document.getElementById("languageToggle")
   };
@@ -228,6 +224,19 @@
     shoes: ["shoes", "sneakers", "loafers", "slippers", "boots", "insoles", "鞋", "鞋子", "运动鞋", "乐福鞋", "拖鞋", "靴", "鞋垫"],
     fashion: ["clothing", "jewelry", "apparel", "fashion", "shirt", "jeans", "dress", "necklace", "服装", "衣服", "珠宝", "饰品", "牛仔裤", "裙子", "项链"],
     pool: ["pool cleaner", "pool cleaners", "robotic pool", "robotic pool cleaner", "泳池机器人", "泳池清洁机器人", "泳池清洁器"]
+  };
+
+  const keywordSynonymMap = {
+    headphones: ["headphone", "earbuds", "earbud", "earphones", "earphone", "headset", "headsets", "audio", "wireless earbuds", "bluetooth earbuds", "bluetooth headphones", "wireless headphones", "gaming headset", "open-ear headphones", "open ear headphones", "bone conduction"],
+    skincare: ["skin care", "beauty", "facial care", "facial", "serum", "toner", "moisturizer", "moisturiser", "sunscreen", "acne", "cleanser", "face wash", "anti aging", "anti-aging"],
+    "pool cleaner": ["pool cleaners", "pool robot", "pool robots", "robotic pool cleaner", "robotic pool cleaners", "pool vacuum", "pool vacuums", "pool maintenance", "pool cleaning", "泳池机器人", "泳池清洁机器人", "泳池清洁器"],
+    vacuum: ["vacuums", "robot vacuum", "robot vacuums", "stick vacuum", "stick vacuums", "cordless vacuum", "cordless vacuums", "cleaning appliance", "cleaning appliances", "vacuum cleaner", "vacuum cleaners"],
+    chair: ["chairs", "office chair", "office chairs", "ergonomic chair", "ergonomic chairs", "gaming chair", "gaming chairs", "furniture"],
+    supplements: ["supplement", "nutrition", "vitamins", "vitamin", "protein", "probiotic", "probiotics", "health supplement", "health supplements", "creatine", "magnesium"],
+    shoes: ["shoe", "footwear", "sneakers", "sneaker", "running shoes", "running shoe", "sandals", "sandal", "boots", "boot", "slippers", "slipper", "insoles", "insole"],
+    pet: ["pets", "dog", "dogs", "cat", "cats", "pet food", "dog food", "cat food", "pet supplement", "pet supplements", "pet supplies", "pet products"],
+    baby: ["babies", "stroller", "strollers", "baby monitor", "baby monitors", "diaper", "diapers", "nursery", "baby product", "baby products", "kids", "kid"],
+    speaker: ["speakers", "audio", "bluetooth speaker", "bluetooth speakers", "soundbar", "sound bar", "soundbars", "karaoke", "microphone", "microphones"]
   };
 
   const translations = {
@@ -300,6 +309,11 @@
       "label.CVR": "CVR",
       "label.Revenue made": "产生收入",
       "label.Commission made": "产生佣金",
+      "label.Last checked": "上次检查",
+      "label.Paid": "已付款",
+      "label.Pending": "待处理",
+      "label.Unpaid": "未付款",
+      "label.Overdue": "逾期",
       "label.Unpaid risk": "付款风险",
       "label.Unpaid merchants": "未付款商家",
       "label.Pending merchants": "待处理商家",
@@ -326,8 +340,13 @@
       "option.All regions": "全部地区",
       "option.All categories": "全部品类",
       "option.All months": "全部月份",
-      "option.All statuses": "全部状态",
+      "option.All status": "全部状态",
       "option.All countries": "全部国家",
+      "option.US": "美国",
+      "option.Canada": "加拿大",
+      "option.UK": "英国",
+      "option.FR": "法国",
+      "option.DE": "德国",
       "option.Paid": "已付款",
       "option.Unpaid": "未付款",
       "option.Pending": "待处理",
@@ -540,6 +559,30 @@
     return "$" + Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 });
   }
 
+  function moneyWithSymbol(value, symbol = "$") {
+    if (!isAvailable(value) || !Number.isFinite(Number(value))) return "-";
+    return `${symbol}${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  }
+
+  function paymentCurrencySymbol(record = {}) {
+    const region = normalizeRegion(record.region || record.marketplace || record.country || record.countryCode);
+    const currency = String(record.currency || "").trim().toUpperCase();
+    if (region === "UK" || currency === "GBP") return "£";
+    if (region === "DE" || region === "FR" || currency === "EUR") return "€";
+    return "$";
+  }
+
+  function paymentMoney(record, value) {
+    return moneyWithSymbol(value, paymentCurrencySymbol(record));
+  }
+
+  function paymentSummaryMoney(rows, value) {
+    const symbols = new Set(rows.map(paymentCurrencySymbol).filter(Boolean));
+    if (symbols.size <= 1) return moneyWithSymbol(value, symbols.values().next().value || "$");
+    if (!isAvailable(value) || !Number.isFinite(Number(value))) return "-";
+    return `Mixed ${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  }
+
   function pct(value) {
     if (!isAvailable(value) || !Number.isFinite(Number(value))) return "not available in current data";
     return (Number(value) * 100).toFixed(2) + "%";
@@ -637,7 +680,7 @@
   }
 
   function updatePaymentRowsForTierMove() {
-    paymentRecords = withPendingPaymentPlaceholders(paymentRecords.map(normalizePaymentRecord));
+    paymentRecords = visiblePaymentRecords(withPendingPaymentPlaceholders(paymentRecords.map(normalizePaymentRecord)));
     rebuildPaymentIndex();
   }
 
@@ -689,6 +732,13 @@
     "please", "pull", "recommend", "recommendation", "recommendations", "show", "that",
     "the", "tier", "to", "top", "want", "with", "推荐", "品牌", "商家", "品类", "类别", "类目",
     "给我", "显示", "列出", "拉取", "下载", "导出", "最好", "最佳", "前", "个", "款", "条"
+  ]);
+
+  const keywordStopWords = new Set([
+    ...categoryStopWords,
+    "about", "all", "around", "candidate", "candidates", "find", "keyword", "keywords",
+    "product", "products", "related", "search", "similar", "using", "包含", "相关", "关键词",
+    "产品", "商品", "相似", "搜索", "查找"
   ]);
 
   function meaningfulTokens(value) {
@@ -785,6 +835,335 @@
       mainCategoryNormsCache = new Set(uniqueCategoryValues().map((value) => normalize(value)));
     }
     return mainCategoryNormsCache.has(normalize(category));
+  }
+
+  function flattenSearchValues(value) {
+    if (value === null || value === undefined) return [];
+    if (Array.isArray(value)) return value.flatMap(flattenSearchValues);
+    if (typeof value === "object") return Object.values(value).flatMap(flattenSearchValues);
+    const text = String(value).trim();
+    return text ? [text] : [];
+  }
+
+  function keywordFieldGroups(offer) {
+    return {
+      merchant: flattenSearchValues([offer.brand, offer.merchantName, offer.merchantId, offer.id]),
+      category: flattenSearchValues(categoryParts(offer)),
+      product: flattenSearchValues([
+        offer.productType,
+        offer.product_type,
+        offer.productTitle,
+        offer.product_title,
+        offer.productName,
+        offer.product_name,
+        offer.title,
+        offer.asinTitle,
+        offer.asin_title,
+        offer.asinTitles,
+        offer.productKeywords,
+        offer.product_keywords,
+        offer.keywords,
+        offer.dealInfo,
+        offer.discountInfo
+      ]),
+      asin: flattenSearchValues([offer.topAsins, offer.asinsText, offer.feishuCategoryAsin]),
+      notes: flattenSearchValues([offer.notes, offer.recommendation, offer.recommendationNotes, offer.reason])
+    };
+  }
+
+  function searchValueMatches(value, alias) {
+    const haystack = String(value || "").toLowerCase();
+    const term = String(alias || "").toLowerCase().trim();
+    const termNorm = normalize(term);
+    if (!haystack || !term || !termNorm) return false;
+    return textIncludesAlias(haystack, term) || normalize(haystack).includes(termNorm);
+  }
+
+  function searchValueExactMatches(value, alias) {
+    const text = String(value || "").trim();
+    const term = String(alias || "").trim();
+    if (!text || !term) return false;
+    if (normalize(text) === normalize(term)) return true;
+    return searchValueMatches(text, term);
+  }
+
+  function keywordAliasEntries() {
+    const entries = [];
+    Object.entries(keywordSynonymMap).forEach(([canonical, synonyms]) => {
+      [canonical, ...synonyms].forEach((alias) => {
+        entries.push({ canonical, alias });
+      });
+    });
+    return entries.sort((a, b) => String(b.alias).length - String(a.alias).length);
+  }
+
+  function addKeywordAlias(aliases, value) {
+    const text = String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+    if (!text || keywordStopWords.has(text)) return;
+    aliases.set(normalize(text), text);
+    const tokenList = words(text).map(singularToken).filter((token) => token.length > 1 && !keywordStopWords.has(token));
+    if (tokenList.length > 1) aliases.set(normalize(tokenList.join(" ")), tokenList.join(" "));
+    if (tokenList.length === 1) aliases.set(normalize(tokenList[0]), tokenList[0]);
+  }
+
+  function cleanedKeywordPhrase(text) {
+    return cleanedCategoryPhrase(text)
+      .replace(/\b(?:find|search|keyword|keywords|product|products|related|similar|about|around|all|matching|match)\b/gi, " ")
+      .replace(/搜索|查找|关键词|产品|商品|相关|相似|匹配|全部|所有/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function specificKeywordAliasAllowed(alias, phraseTokens, phrase) {
+    const aliasTokens = meaningfulTokens(alias).filter((token) => !keywordStopWords.has(token));
+    if (!aliasTokens.length || !phraseTokens.length) return false;
+    const phraseNorm = normalize(phrase);
+    const aliasNorm = normalize(alias);
+    if (aliasNorm.includes(phraseNorm) || phraseNorm.includes(aliasNorm)) return true;
+    const overlap = aliasTokens.filter((token) => phraseTokens.includes(token));
+    if (overlap.length >= Math.min(2, phraseTokens.length)) return true;
+    const lastPhraseToken = phraseTokens[phraseTokens.length - 1];
+    return lastPhraseToken && lastPhraseToken.length > 3 && aliasTokens.includes(lastPhraseToken);
+  }
+
+  function keywordSearchRequest(prompt) {
+    const phrase = cleanedKeywordPhrase(prompt);
+    const lower = String(prompt || "").toLowerCase();
+    const phraseLower = phrase.toLowerCase();
+    const aliases = new Map();
+    let canonical = "";
+    let matchedAlias = "";
+    const phraseTokens = meaningfulTokens(phrase).filter((token) => !keywordStopWords.has(token));
+    let restrictToSpecificAlias = false;
+
+    keywordAliasEntries().some((entry) => {
+      if (searchValueMatches(phraseLower, entry.alias) || searchValueMatches(lower, entry.alias)) {
+        canonical = entry.canonical;
+        matchedAlias = entry.alias;
+        return true;
+      }
+      return false;
+    });
+
+    if (phrase) addKeywordAlias(aliases, phrase);
+    if (canonical) {
+      addKeywordAlias(aliases, matchedAlias);
+      restrictToSpecificAlias = ["baby", "pet"].includes(canonical) &&
+        phraseTokens.length > 1 &&
+        normalize(phrase) !== normalize(canonical);
+      if (!restrictToSpecificAlias) addKeywordAlias(aliases, canonical);
+      (keywordSynonymMap[canonical] || [])
+        .filter((alias) => !restrictToSpecificAlias || specificKeywordAliasAllowed(alias, phraseTokens, phrase))
+        .forEach((alias) => addKeywordAlias(aliases, alias));
+    }
+
+    phraseTokens
+      .filter(() => !(canonical && phraseTokens.length > 1))
+      .forEach((token) => addKeywordAlias(aliases, token));
+
+    const aliasList = Array.from(aliases.values()).sort((a, b) => b.length - a.length);
+    const tokens = meaningfulTokens(aliasList.concat(phrase).join(" ")).filter((token) => !keywordStopWords.has(token));
+    const keyword = phrase || canonical || matchedAlias;
+    if (!keyword || (!aliasList.length && !tokens.length)) return null;
+    return {
+      keyword,
+      canonical: canonical || "",
+      matchedAlias,
+      aliases: aliasList,
+      primaryAliases: [keyword, canonical, matchedAlias].filter(Boolean),
+      synonymAliases: canonical ? (keywordSynonymMap[canonical] || []) : [],
+      tokens: Array.from(new Set(tokens)),
+      knownKeyword: Boolean(canonical),
+      specificKeyword: restrictToSpecificAlias
+    };
+  }
+
+  function keywordTokenFuzzyScore(groups, request) {
+    const tokens = request.tokens || [];
+    if (!tokens.length) return 0;
+    const haystackTokens = words(Object.values(groups).flat().join(" ")).map(singularToken);
+    const matched = tokens.filter((queryToken) => (
+      haystackTokens.some((token) => {
+        if (token === queryToken) return true;
+        if (token.length <= 3 || queryToken.length <= 3) return false;
+        if (token.includes(queryToken)) return true;
+        if (queryToken.includes(token)) return token.length >= Math.ceil(queryToken.length * 0.75);
+        return false;
+      })
+    ));
+    if (matched.length < (tokens.length <= 1 ? 1 : Math.min(2, tokens.length))) return 0;
+    return matched.length ? (matched.length / tokens.length) * 260 : 0;
+  }
+
+  function keywordAliasIsPrimary(alias, request) {
+    const aliasNorm = normalize(alias);
+    const primaryNorms = new Set((request.primaryAliases || []).map((value) => normalize(value)).filter(Boolean));
+    if (primaryNorms.has(aliasNorm)) return true;
+    const primaryTokens = meaningfulTokens((request.primaryAliases || []).join(" ")).filter((token) => !keywordStopWords.has(token));
+    const aliasTokens = meaningfulTokens(alias).filter((token) => !keywordStopWords.has(token));
+    if (!primaryTokens.length || !aliasTokens.length) return false;
+    const overlap = aliasTokens.filter((token) => primaryTokens.includes(token)).length;
+    return overlap >= Math.min(primaryTokens.length, primaryTokens.length <= 1 ? 1 : 2);
+  }
+
+  function keywordOfferMatch(offer, request) {
+    if (!offer || !request) return null;
+    const groups = keywordFieldGroups(offer);
+    const groupValues = Object.values(groups).flat();
+    const categoryValues = groups.category || [];
+    const productValues = (groups.product || []).concat(groups.asin || []);
+    const primaryAliases = new Set((request.primaryAliases || []).map((alias) => normalize(alias)).filter(Boolean));
+    const allAliases = request.aliases || [];
+    let best = { score: 0, priority: 99, matchType: "", matchedTerms: [], matchedFields: [] };
+
+    const recordMatch = (priority, baseScore, matchType, alias, field) => {
+      const aliasWeight = Math.min(String(alias || "").length, 40);
+      const score = baseScore + aliasWeight;
+      if (score > best.score || priority < best.priority) {
+        best = {
+          score,
+          priority,
+          matchType,
+          matchedTerms: [alias],
+          matchedFields: [field]
+        };
+      } else if (score === best.score) {
+        best.matchedTerms.push(alias);
+        best.matchedFields.push(field);
+      }
+    };
+
+    allAliases.forEach((alias) => {
+      if (groupValues.some((value) => searchValueExactMatches(value, alias))) {
+        const primary = keywordAliasIsPrimary(alias, request);
+        recordMatch(primary ? 1 : 3, primary ? 1000 : 660, primary ? "Exact match" : "Synonym match", alias, "offer data");
+      }
+    });
+
+    allAliases.forEach((alias) => {
+      if (categoryValues.some((value) => searchValueMatches(value, alias))) {
+        const primary = keywordAliasIsPrimary(alias, request);
+        recordMatch(primary ? 2 : 3, primary ? 820 : 660, primary ? "Category match" : "Synonym match", alias, "category");
+      }
+    });
+
+    allAliases.forEach((alias) => {
+      const isPrimary = primaryAliases.has(normalize(alias));
+      if (!isPrimary && groupValues.some((value) => searchValueMatches(value, alias))) {
+        recordMatch(3, 660, "Synonym match", alias, "synonym");
+      }
+    });
+
+    allAliases.forEach((alias) => {
+      if (productValues.some((value) => searchValueMatches(value, alias))) {
+        recordMatch(4, 520, "Product/ASIN match", alias, "product");
+      }
+    });
+
+    const fuzzy = keywordTokenFuzzyScore(groups, request);
+    if (!request.specificKeyword && fuzzy >= 120) {
+      recordMatch(5, fuzzy, "Fuzzy match", request.tokens.join(", "), "offer text");
+    }
+
+    if (!best.score) return null;
+    return {
+      offer,
+      score: best.score,
+      priority: best.priority,
+      matchType: best.matchType,
+      matchedTerms: Array.from(new Set(best.matchedTerms.filter(Boolean))).slice(0, 8),
+      matchedFields: Array.from(new Set(best.matchedFields.filter(Boolean))).slice(0, 4)
+    };
+  }
+
+  function hasStrongTier3KeywordSignals(offer) {
+    return offer.tier === "Tier 3" && (
+      number(offer.salesAmount) >= 5000 ||
+      number(offer.orders) >= 25 ||
+      (number(offer.orders) >= 5 && number(offer.conversionRate) >= 0.01) ||
+      (number(offer.orders) >= 5 && number(offer.epc) >= 0.25)
+    );
+  }
+
+  function keywordTierPriority(offer, includeTier4 = false, includeBlack = false) {
+    if (offer.tier === "Tier 1") return 1;
+    if (hasStrongTier3KeywordSignals(offer)) return 2;
+    if (offer.tier === "Tier 2") return 3;
+    if (offer.tier === "Tier 3") return 4;
+    if (offer.tier === "Tier 4") return includeTier4 ? 5 : 99;
+    if (offer.tier === "BLACK TIER") return includeBlack ? 6 : 100;
+    return 50;
+  }
+
+  function compareKeywordMatches(a, b, context = {}) {
+    const includeTier4 = context.includeTier4 || false;
+    const includeBlack = context.includeBlack || false;
+    if (context.topMetricRequest) {
+      const metricDelta = compareTopMetricRows(a.offer, b.offer, context.topMetricRequest);
+      if (metricDelta) return metricDelta;
+    }
+    return (
+      keywordTierPriority(a.offer, includeTier4, includeBlack) - keywordTierPriority(b.offer, includeTier4, includeBlack) ||
+      a.priority - b.priority ||
+      number(b.score) - number(a.score) ||
+      number(b.offer.salesAmount) - number(a.offer.salesAmount) ||
+      number(b.offer.orders) - number(a.offer.orders) ||
+      number(b.offer.conversionRate) - number(a.offer.conversionRate) ||
+      number(b.offer.aov) - number(a.offer.aov) ||
+      number(b.offer.epc) - number(a.offer.epc) ||
+      String(a.offer.brand || "").localeCompare(String(b.offer.brand || ""), undefined, { numeric: true, sensitivity: "base" })
+    );
+  }
+
+  function keywordSearchMatches(prompt, options = {}) {
+    const request = options.request || keywordSearchRequest(prompt);
+    if (!request) return [];
+    const includeTier4 = options.includeTier4 || /tier\s*4|retest|第四层|第四级|四层|四级|重测|重新测试/i.test(prompt);
+    const includeBlack = options.includeBlack || /black|blocked|黑名单|黑色|屏蔽|暂停/i.test(prompt);
+    const tier = options.tier || tierFromPrompt(prompt);
+    const metricFilters = options.metricFilters || extractMetricFilters(prompt);
+    const topMetricRequest = options.topMetricRequest || null;
+    const seen = new Set();
+    return offers
+      .map((offer) => keywordOfferMatch(offer, request))
+      .filter(Boolean)
+      .filter((match) => !tier || match.offer.tier === tier)
+      .filter((match) => includeTier4 || match.offer.tier !== "Tier 4")
+      .filter((match) => includeBlack || match.offer.tier !== "BLACK TIER")
+      .filter((match) => !metricFilters.length || applyMetricFilters([match.offer], metricFilters).length)
+      .filter((match) => {
+        const key = offerIdentityKey(match.offer);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => compareKeywordMatches(a, b, { includeTier4, includeBlack, topMetricRequest }));
+  }
+
+  function hasDirectMerchantKeywordLookup(prompt) {
+    const lookup = merchantLookupForPrompt(prompt);
+    const first = lookup.matches[0];
+    if (!first) return false;
+    const cleanedNorm = normalize(lookup.cleaned);
+    const brandNorm = normalize(first.offer.brand);
+    const id = String(first.offer.merchantId || "").trim();
+    if (!cleanedNorm || !brandNorm) return false;
+    return (id && cleanedNorm === normalize(id)) ||
+      brandNorm === cleanedNorm ||
+      brandNorm.startsWith(cleanedNorm) ||
+      brandNorm.includes(cleanedNorm) ||
+      cleanedNorm.includes(brandNorm);
+  }
+
+  function hasKeywordSearchIntent(prompt, request, context = {}) {
+    if (!request) return false;
+    if (findByAsin(prompt) || findByMerchantId(prompt) || extractPaymentCycleFilter(prompt) || promptHasPaymentTerms(prompt)) return false;
+    if (request.knownKeyword) return true;
+    if (hasDirectMerchantKeywordLookup(prompt)) return false;
+    if (context.category && hasMainCategoryValue(context.category) && normalize(context.category) === normalize(request.keyword)) return false;
+    return wantsRecommendationList(prompt) ||
+      /\b(?:find|search|keyword|keywords|related|similar|matching)\b/i.test(prompt) ||
+      /搜索|查找|找|关键词|相关|相似|匹配/.test(prompt);
   }
 
   function dateOnly(value) {
@@ -917,12 +1296,42 @@
   }
 
   function normalizeRegion(value) {
-    const text = String(value || "").trim().toUpperCase();
-    if (!text) return "";
-    if (text === "USA") return "US";
-    if (text === "GB") return "UK";
-    if (["US", "UK", "DE", "FR", "CA", "AU"].includes(text)) return text;
-    return text;
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const marketplace = raw
+      .replace(/^https?:\/\//i, "")
+      .replace(/^www\./i, "")
+      .split(/[/?#]/)[0]
+      .toLowerCase();
+    const compact = marketplace.replace(/[^a-z0-9.]+/g, "");
+    const aliases = {
+      "amazon.com": "US",
+      com: "US",
+      us: "US",
+      usa: "US",
+      unitedstates: "US",
+      "amazon.ca": "Canada",
+      ca: "Canada",
+      can: "Canada",
+      canada: "Canada",
+      "amazon.co.uk": "UK",
+      "amazon.uk": "UK",
+      "co.uk": "UK",
+      uk: "UK",
+      gb: "UK",
+      gbr: "UK",
+      unitedkingdom: "UK",
+      "amazon.fr": "FR",
+      fr: "FR",
+      fra: "FR",
+      france: "FR",
+      "amazon.de": "DE",
+      de: "DE",
+      deu: "DE",
+      germany: "DE",
+      deutschland: "DE"
+    };
+    return aliases[compact] || raw.toUpperCase();
   }
 
   function paymentRegionFor(record, matchedOffer = {}) {
@@ -1183,6 +1592,14 @@
       .filter(isTrackablePaymentRecord);
   }
 
+  function hasPaymentRevenueOrCommission(record) {
+    return number(record.revenueMade) > 0 || number(record.commissionMade) > 0;
+  }
+
+  function visiblePaymentRecords(records) {
+    return (records || []).map(normalizePaymentRecord).filter(isTrackablePaymentRecord);
+  }
+
   function hasPayablePaymentAmount(record) {
     return (
       number(record.commissionMade) > 0 ||
@@ -1193,10 +1610,7 @@
   }
 
   function isTrackablePaymentRecord(record) {
-    const status = String(record.paymentStatus || "").toLowerCase();
-    const rawStatus = String(record.rawStatus || "").toLowerCase();
-    const merchantKey = paymentMerchantKey(record);
-    return hasPayablePaymentAmount(record) || Boolean(merchantKey && (record.isPlaceholder || status === "pending" || rawStatus.includes("pending")));
+    return hasPaymentRevenueOrCommission(record);
   }
 
   function getPaymentByMerchant(merchant) {
@@ -1245,6 +1659,8 @@
     const unpaidMerchants = new Set(rows.filter((record) => record.paymentStatus === "Unpaid").map((record) => record.merchantId || record.merchantName));
     const pendingMerchants = new Set(rows.filter((record) => record.paymentStatus === "Pending").map((record) => record.merchantId || record.merchantName));
     const paidMerchants = new Set(rows.filter((record) => record.paymentStatus === "Paid").map((record) => record.merchantId || record.merchantName));
+    const overdueRows = rows.filter(isPaymentOverdue);
+    const overdueMerchants = new Set(overdueRows.map((record) => record.merchantId || record.merchantName).filter(Boolean));
     return {
       recordCount: rows.length,
       merchantCount: merchantIds.size,
@@ -1259,7 +1675,8 @@
       unpaidMerchantCount: unpaidMerchants.size,
       pendingMerchantCount: pendingMerchants.size,
       paidMerchantCount: paidMerchants.size,
-      overdueCount: rows.filter(isPaymentOverdue).length
+      overdueMerchantCount: overdueMerchants.size,
+      overdueCount: overdueRows.length
     };
   }
 
@@ -1280,11 +1697,11 @@
       els.paymentSync.textContent = t("payments.syncing", "Syncing...");
     }
     try {
-      const response = await fetch("/api/levanta/payments?start=2026-02&end=2026-06&marketplaces=US,UK,DE,FR", { cache: "no-store" });
+      const response = await fetch("/api/levanta/payments", { cache: "no-store" });
       if (!response.ok) throw new Error(`Levanta API sync returned ${response.status}`);
       const payload = await response.json();
       if (!payload.records || !payload.records.length) throw new Error("Levanta API returned no payment records");
-      paymentRecords = withPendingPaymentPlaceholders(payload.records.map(normalizePaymentRecord));
+      paymentRecords = visiblePaymentRecords(withPendingPaymentPlaceholders(payload.records.map(normalizePaymentRecord)));
       rebuildPaymentIndex();
       state.paymentSource = "Levanta API";
       state.livePaymentsLoaded = true;
@@ -2554,6 +2971,27 @@
     return { type: "category", items: rows, summary: aggregateRows(rows), filters: { category } };
   }
 
+  function buildKeywordContext(request, matches, topRows) {
+    const rows = matches.map((match) => match.offer);
+    state.lastRows = rows;
+    const matchedCategories = Array.from(new Set(rows.flatMap((offer) => categoryParts(offer))))
+      .filter((category) => category && category !== "Uncategorized")
+      .slice(0, 12);
+    return {
+      type: "keyword",
+      items: topRows,
+      summary: aggregateRows(rows),
+      filters: {
+        keyword: request.keyword,
+        canonical: request.canonical,
+        aliases: request.aliases,
+        matchedCategories,
+        totalMatches: rows.length,
+        topOfferNames: topRows.map((offer) => offer.brand).filter(Boolean)
+      }
+    };
+  }
+
   function buildTierContext(tier, rows) {
     state.lastRows = rows;
     return { type: "tier", items: rows, summary: aggregateRows(rows), filters: { tier } };
@@ -2724,8 +3162,8 @@
       `<p><strong>${escapeHtml(optionText(item.month))}:</strong> ${escapeHtml(t(`payment.${item.status}`, item.status))} ${escapeHtml(item.checkDate)}; ${escapeHtml(t("payment.unpaid", "unpaid"))} ${item.unpaid}, ${escapeHtml(t("payment.pendingCount", "pending"))} ${item.pending}</p>`
     )).join("");
     return statCards([
-      ["Revenue made", shortMoney(s.totalRevenueMade)],
-      ["Commission made", shortMoney(s.totalCommissionMade)],
+      ["Revenue made", paymentSummaryMoney(rows, s.totalRevenueMade)],
+      ["Commission made", paymentSummaryMoney(rows, s.totalCommissionMade)],
       ["Unpaid merchants", String(s.unpaidMerchantCount)],
       ["Pending merchants", String(s.pendingMerchantCount)],
       ["Overdue rows", String(s.overdueCount)]
@@ -2737,8 +3175,8 @@
       { label: "Month", render: (o) => escapeHtml(`${optionText(o.reportMonth)} ${o.reportYear}`) },
       { label: "Status", render: (o) => escapeHtml(statusText(o.paymentStatus || "Unknown")) },
       { label: "Tier", render: (o) => escapeHtml(o.tier || "Unknown") },
-      { label: "Revenue", render: (o) => shortMoney(o.revenueMade) },
-      { label: "Commission made", render: (o) => shortMoney(o.commissionMade) },
+      { label: "Revenue", render: (o) => paymentMoney(o, o.revenueMade) },
+      { label: "Commission made", render: (o) => paymentMoney(o, o.commissionMade) },
       { label: "Cycle", render: (o) => escapeHtml(o.paymentCycle ? `${o.paymentCycle} days` : "-") },
       { label: "Expected payment date", render: (o) => escapeHtml(o.expectedPaymentDate || o.paymentAvailabilityDate || "not available") }
     ]);
@@ -2761,6 +3199,28 @@
     insightList(top);
   }
 
+  function renderKeywordStats(context) {
+    const rows = context.items;
+    const s = context.summary;
+    const filters = context.filters || {};
+    const tierText = Object.entries(s.tierBreakdown || {}).map(([tier, count]) => `${tier}: ${count}`).join(", ") || "not available";
+    const categoryText = (filters.matchedCategories || []).join(", ") || "not available in current data";
+    const topText = (filters.topOfferNames || []).join(", ") || "not available in current data";
+    return statCards([
+      ["Search keyword", textValue(filters.keyword)],
+      ["Matching offers", String(filters.totalMatches || s.totalOffers || 0)],
+      ["Revenue made", shortMoney(s.totalRevenue)],
+      ["Commission made", shortMoney(s.totalCommission)],
+      ["Average AOV", shortMoney(s.avgAov)],
+      ["Blended EPC", shortEpc(s.blendedEpc)],
+      ["Average CVR", shortPct(s.avgCvr)]
+    ]) +
+    `<div class="context-note"><strong>Matched categories:</strong> ${escapeHtml(categoryText)}</div>` +
+    `<div class="context-note"><strong>Top 5 recommended offers:</strong> ${escapeHtml(topText)}</div>` +
+    `<div class="context-note"><strong>Tier breakdown:</strong> ${escapeHtml(tierText)}</div>` +
+    miniTable(rows, contextColumnsFor(rows).slice(0, 10));
+  }
+
   function renderContextPanel(context) {
     const query = state.currentQuery ? `${t("context.basedOn", "Based on:")} ${state.currentQuery}` : t("context.generalFiltered", "General filtered view");
     const titles = {
@@ -2769,6 +3229,7 @@
       merchant: [t("context.merchantTitle", "Merchant Statistics"), query],
       asin: [t("context.asinTitle", "ASIN Statistics"), query],
       category: [t("context.categoryTitle", "Category Overview"), query],
+      keyword: ["Keyword Search Overview", query],
       tier: [t("context.tierTitle", "Tier Overview"), query],
       payment: [t("context.paymentTitle", "Payment Overview"), query]
     };
@@ -2784,6 +3245,8 @@
       els.recBox.innerHTML = renderPaymentStats(context);
     } else if (context.type === "category") {
       els.recBox.innerHTML = renderCategoryStats(context);
+    } else if (context.type === "keyword") {
+      els.recBox.innerHTML = renderKeywordStats(context);
     } else if (context.type === "tier") {
       els.recBox.innerHTML = renderRecommendationStats(buildRecommendationContext(topRecommendations(context.items, { includeTier4: true, includeBlack: true }), context.filters));
     } else if (context.type === "recommendation") {
@@ -2883,6 +3346,19 @@
     { label: "AOV", render: (o) => shortMoney(o.aov) },
     { label: "Commission made", render: (o) => shortMoney(o.affCommission) },
     { label: "EPC", render: (o) => shortEpc(o.epc) },
+    { label: "Orders", render: (o) => number(o.orders).toLocaleString() },
+    { label: "CVR", render: (o) => shortPct(o.conversionRate) },
+    { label: "Revenue", render: (o) => shortMoney(o.salesAmount) },
+    { label: "Payment", render: (o) => escapeHtml(o.paymentStatus || "not available") }
+  ];
+
+  const keywordColumns = [
+    { label: "Merchant", render: (o) => `<strong>${escapeHtml(o.brand || "")}</strong><br><small>${escapeHtml(o.merchantId || "")}</small>` },
+    { label: "Tier", render: (o) => escapeHtml(tierGroup(o)) },
+    { label: "Category", render: (o) => escapeHtml(displayCategory(o)) },
+    { label: "AOV", render: (o) => shortMoney(o.aov) },
+    { label: "EPC", render: (o) => shortEpc(o.epc) },
+    { label: "Commission made", render: (o) => shortMoney(o.affCommission) },
     { label: "Orders", render: (o) => number(o.orders).toLocaleString() },
     { label: "CVR", render: (o) => shortPct(o.conversionRate) },
     { label: "Revenue", render: (o) => shortMoney(o.salesAmount) },
@@ -3048,6 +3524,96 @@
       resultTable(top, topMetricColumns);
   }
 
+  function keywordScopeLabel(request) {
+    if (!request) return "keyword";
+    if (request.canonical === "headphones") return "headphones/audio";
+    if (request.canonical === "speaker") return "speaker/audio";
+    return request.keyword || request.canonical || "keyword";
+  }
+
+  function keywordNeedsClarification(request) {
+    if (!request) return false;
+    const keywordTokens = meaningfulTokens(request.keyword);
+    return keywordTokens.length === 1 && normalize(request.keyword) === "audio";
+  }
+
+  function keywordSearchAnswer(prompt, request, options = {}) {
+    const language = responseLanguageFor(prompt);
+    if (keywordNeedsClarification(request)) {
+      setContext(buildKeywordContext(request, [], []));
+      return language === "zh"
+        ? "你是指 headphones/earbuds/audio 产品，还是想看全部 electronics offers？"
+        : "Do you mean headphones/earbuds/audio products, or do you want all electronics offers?";
+    }
+    const tier = tierFromPrompt(prompt);
+    const includeTier4 = /tier\s*4|retest|第四层|第四级|四层|四级|重测|重新测试/i.test(prompt);
+    const includeBlack = /black|blocked|黑名单|黑色|屏蔽|暂停/i.test(prompt);
+    const metricFilters = extractMetricFilters(prompt);
+    const topMetricRequest = options.topMetricRequest || null;
+    const matches = keywordSearchMatches(prompt, { request, tier, includeTier4, includeBlack, metricFilters, topMetricRequest });
+    if (!matches.length) {
+      setContext(buildKeywordContext(request, [], []));
+      return "No matching offers found in current data.";
+    }
+
+    const requestedCount = requestedRecommendationCount(prompt, matches.length);
+    const safeCount = Math.min(Math.max(requestedCount, 1), MAX_RECOMMENDATION_EXPORT);
+    const exportMatches = matches.slice(0, safeCount);
+    const exportRows = exportMatches.map((match) => match.offer);
+    const topRows = exportRows.slice(0, 5);
+    setContext(buildKeywordContext(request, matches, topRows));
+
+    const scopeLabel = keywordScopeLabel(request);
+    const matchedCategories = Array.from(new Set(matches.flatMap((match) => categoryParts(match.offer))))
+      .filter((category) => category && category !== "Uncategorized")
+      .slice(0, 8);
+    const filterParts = [
+      tier,
+      metricFilterText(metricFilters),
+      topMetricRequest ? `ranked by ${topMetricRequest.sortDescription}` : ""
+    ].filter(Boolean);
+    const filterNote = filterParts.length ? ` Filter: ${filterParts.join(", ")}.` : "";
+    const downloadId = registerRecommendationDownload(exportRows, {
+      downloadType: "offers",
+      filePrefix: "keyword_offer_search",
+      exportScope: request.keyword || scopeLabel,
+      sheetName: "Keyword Offers",
+      prompt,
+      keyword: request.keyword,
+      columns: recommendationExportColumns()
+    }, safeCount);
+    const rankingText = topMetricRequest
+      ? `ranked by ${topMetricRequest.sortDescription}`
+      : "ranked by keyword match, Tier 1 priority, strong Tier 3 signals, Tier 2, then performance";
+    const exportNote = exportRows.length < matches.length
+      ? `${exportRows.length.toLocaleString()} of ${matches.length.toLocaleString()} matching offers are included in the file.`
+      : `${exportRows.length.toLocaleString()} matching offers are included in the file.`;
+
+    if (language === "zh") {
+      return `<p><strong>找到与 ${escapeHtml(scopeLabel)} 相关的 offer。</strong> 根据品类、产品关键词和推荐优先级，先显示前 ${topRows.length.toLocaleString()} 个。</p>` +
+        `<p><strong>匹配品类:</strong> ${escapeHtml(matchedCategories.join(", ") || "当前数据没有可用匹配品类")}${escapeHtml(filterNote)}</p>` +
+        `<div class="download-card">
+          <div>
+            <strong>关键词 offer 文件</strong>
+            <span>${escapeHtml(exportNote)} ${escapeHtml(rankingText)}。</span>
+          </div>
+          <button class="download-xlsx-button" type="button" data-download-id="${escapeHtml(downloadId)}">下载 Excel</button>
+        </div>` +
+        resultTable(topRows, keywordColumns, language);
+    }
+
+    return `<p><strong>I found offers related to ${escapeHtml(scopeLabel)}.</strong> Here are the best matching offers based on category, product keyword, and recommendation priority.</p>` +
+      `<p><strong>Matched categories:</strong> ${escapeHtml(matchedCategories.join(", ") || "not available in current data")}${escapeHtml(filterNote)}</p>` +
+      `<div class="download-card">
+        <div>
+          <strong>Keyword offer file</strong>
+          <span>${escapeHtml(exportNote)} ${escapeHtml(rankingText)}.</span>
+        </div>
+        <button class="download-xlsx-button" type="button" data-download-id="${escapeHtml(downloadId)}">Download Excel</button>
+      </div>` +
+      resultTable(topRows, keywordColumns, language);
+  }
+
   const paymentCycleOfferColumns = [
     { label: "Merchant", render: (o) => `<strong>${escapeHtml(o.brand || "")}</strong><br><small>${escapeHtml(o.merchantId || "")}</small>` },
     { label: "Cycle", render: (o) => escapeHtml(o.paymentCycle ? `${o.paymentCycle} days` : "-") },
@@ -3065,8 +3631,8 @@
     { label: "Tier", render: (o) => escapeHtml(o.tier || "Unknown") },
     { label: "Month", render: (o) => escapeHtml(`${optionText(o.reportMonth)} ${o.reportYear}`) },
     { label: "Status", render: (o) => escapeHtml(statusText(o.paymentStatus || "Unknown")) },
-    { label: "Revenue made", render: (o) => shortMoney(o.revenueMade) },
-    { label: "Commission made", render: (o) => shortMoney(o.commissionMade) },
+    { label: "Revenue made", render: (o) => paymentMoney(o, o.revenueMade) },
+    { label: "Commission made", render: (o) => paymentMoney(o, o.commissionMade) },
     { label: "Cycle", render: (o) => escapeHtml(o.paymentCycle ? `${o.paymentCycle} days` : "-") },
     { label: "Expected payment date", render: (o) => escapeHtml(o.expectedPaymentDate || o.paymentAvailabilityDate || "not available") },
     { label: "Notes", render: (o) => escapeHtml(o.notes || "not available") }
@@ -3101,8 +3667,8 @@
       { label: "Tier", render: (o) => escapeHtml(o.tier || "Unknown") },
       { label: "Month", render: (o) => escapeHtml(`${chatMonthText(o.reportMonth, language)} ${o.reportYear}`) },
       { label: "Status", render: (o) => escapeHtml(chatStatusText(o.paymentStatus || "Unknown", language)) },
-      { label: "Revenue made", render: (o) => shortMoney(o.revenueMade) },
-      { label: "Commission made", render: (o) => shortMoney(o.commissionMade) },
+      { label: "Revenue made", render: (o) => paymentMoney(o, o.revenueMade) },
+      { label: "Commission made", render: (o) => paymentMoney(o, o.commissionMade) },
       { label: "Cycle", render: (o) => escapeHtml(o.paymentCycle ? `${o.paymentCycle} days` : "-") },
       { label: "Available", render: (o) => escapeHtml(o.paymentAvailabilityDate || "not available") },
       { label: "Notes", render: (o) => escapeHtml(chatPaymentNoteText(o.notes, language)) }
@@ -3718,6 +4284,11 @@
     const metricFilters = extractMetricFilters(prompt);
     const topMetricRequest = extractTopMetricRequest(prompt);
     const metricSort = extractMetricSortIntent(prompt);
+    const keywordRequest = keywordSearchRequest(prompt);
+
+    if (hasKeywordSearchIntent(prompt, keywordRequest, { category })) {
+      return keywordSearchAnswer(prompt, keywordRequest, { topMetricRequest });
+    }
 
     if (topMetricRequest) {
       return topMetricOfferAnswer(prompt, topMetricRequest);
@@ -4219,6 +4790,78 @@
     return text || fallback;
   }
 
+  function titleCaseFilePart(value) {
+    return String(value || "")
+      .replace(/[_-]+/g, " ")
+      .replace(/[^\p{L}\p{N}&+ ]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .split(" ")
+      .map((word) => {
+        if (/^(aov|epc|cvr|asin|us|uk|fr|de)$/i.test(word)) return word.toUpperCase();
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      })
+      .join(" ");
+  }
+
+  function categoryFilenameLabel(category) {
+    const text = String(category || "").trim();
+    const labels = {
+      "Beauty & Personal Care": "Beauty",
+      "Pet Supplies": "Pet",
+      "Clothing, Shoes & Jewelry": "Shoes",
+      "Patio, Lawn & Garden": "Patio Lawn Garden",
+      "Sports & Outdoors": "Sports Outdoors",
+      "Home & Kitchen": "Home Kitchen",
+      "Health & Household": "Health Household",
+      "Grocery & Gourmet Food": "Grocery",
+      "Cell Phones & Accessories": "Cell Phones",
+      "Tools & Home Improvement": "Tools Home Improvement"
+    };
+    return labels[text] || titleCaseFilePart(text.replace(/\s*&\s*/g, " "));
+  }
+
+  function chatbotOfferDescriptor(context = {}) {
+    const parts = [];
+    if (context.category) parts.push(categoryFilenameLabel(context.category));
+    else if (context.keyword) parts.push(titleCaseFilePart(context.keyword));
+    else if (context.tier) parts.push(titleCaseFilePart(context.tier));
+    else if (context.paymentCycleFilter) parts.push("Payment Cycle");
+
+    if (context.ranking && !parts.some((part) => normalize(part).includes(normalize(context.ranking)))) {
+      parts.push(titleCaseFilePart(context.ranking));
+    }
+
+    const descriptor = parts
+      .map((part) => titleCaseFilePart(part))
+      .filter(Boolean)
+      .filter((part, index, list) => list.findIndex((item) => normalize(item) === normalize(part)) === index)
+      .join(" ");
+    return descriptor;
+  }
+
+  function todayDownloadDateStamp() {
+    const date = PAYMENT_TODAY instanceof Date && !Number.isNaN(PAYMENT_TODAY.valueOf()) ? PAYMENT_TODAY : new Date();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${month}-${day}-${date.getFullYear()}`;
+  }
+
+  function safeDownloadFilename(value) {
+    return String(value || "download.xlsx")
+      .replace(/[<>:"/\\|?*]+/g, "-")
+      .replace(/\s+/g, " ")
+      .replace(/\s+-\s+/g, "-")
+      .trim();
+  }
+
+  function chatbotOfferDownloadFilename(context = {}, requestedCount = 0) {
+    const count = Math.max(1, Math.floor(number(requestedCount) || number(context.exportCount) || 1));
+    const descriptor = chatbotOfferDescriptor(context);
+    const descriptorPart = descriptor ? `${descriptor} ` : "";
+    return safeDownloadFilename(`Yeahpromos_Top ${count} ${descriptorPart}Offers ${todayDownloadDateStamp()}.xlsx`);
+  }
+
   function safeSheetName(value) {
     const name = String(value || "Export").replace(/[\[\]:*?/\\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 31);
     return name || "Export";
@@ -4235,15 +4878,17 @@
     const scope = context.exportScope || context.category || context.tier || "top";
     const prefix = context.filePrefix || (type === "payments" ? "payment_records" : type === "sheet" ? "sheet_records" : "offer_recommendations");
     const rowLabel = type === "payments" ? "records" : type === "sheet" ? "rows" : "offers";
-    const columns = context.downloadColumns || (type === "payments" ? paymentExportColumns() : recommendationExportColumns());
-    const sheetName = context.sheetName || (type === "payments" ? "Payments" : type === "sheet" ? "Sheet Records" : "Recommendations");
+    const columns = context.downloadColumns || (type === "payments" ? paymentExportColumns() : type === "offers" ? chatbotOfferExportColumns() : recommendationExportColumns());
+    const sheetName = type === "offers" ? "offer list" : context.sheetName || (type === "payments" ? "Payments" : type === "sheet" ? "Sheet Records" : "Recommendations");
     state.recommendationDownloads[id] = {
       rows,
       context: { ...context, columns, sheetName },
       requestedCount,
       columns,
       sheetName,
-      filename: `${prefix}_${safeFilePart(scope)}_${rows.length}_${rowLabel}_${today}.xlsx`
+      filename: context.filename || (type === "offers"
+        ? chatbotOfferDownloadFilename({ ...context, exportScope: scope, exportCount: rows.length }, requestedCount)
+        : `${prefix}_${safeFilePart(scope)}_${rows.length}_${rowLabel}_${today}.xlsx`)
     };
     return id;
   }
@@ -4299,6 +4944,18 @@
     ];
   }
 
+  function chatbotOfferExportColumns() {
+    return [
+      ["Merchant ID", (offer) => offer.merchantId || ""],
+      ["Name", (offer) => offer.brand || offer.merchantName || ""],
+      ["AOV", (offer) => number(offer.aov)],
+      ["Commission Rate", (offer) => shortPct(offer.commissionRate)],
+      ["Payment Cycle", (offer) => offer.paymentCycle || ""],
+      ["Main Category", (offer) => offer.mainCategory || ""],
+      ["Subcategory", (offer) => offer.subCategory || ""]
+    ];
+  }
+
   function paymentExportColumns() {
     return [
       ["Merchant ID", (record) => record.merchantId || ""],
@@ -4311,10 +4968,10 @@
       ["Subcategory", (record) => record.subCategory || ""],
       ["Month", (record) => `${optionText(record.reportMonth)} ${record.reportYear || ""}`.trim()],
       ["Status", (record) => statusText(record.paymentStatus || "Unknown")],
-      ["Revenue Made", (record) => number(record.revenueMade)],
-      ["Commission Made", (record) => number(record.commissionMade)],
-      ["Paid Amount", (record) => number(record.paidAmount)],
-      ["Remaining Amount", (record) => number(record.remainingAmount)],
+      ["Revenue Made", (record) => paymentMoney(record, record.revenueMade)],
+      ["Commission Made", (record) => paymentMoney(record, record.commissionMade)],
+      ["Paid Amount", (record) => paymentMoney(record, record.paidAmount)],
+      ["Remaining Amount", (record) => paymentMoney(record, record.remainingAmount)],
       ["Payment Cycle Days", (record) => number(record.paymentCycle)],
       ["Expected Payment Date", (record) => record.expectedPaymentDate || record.paymentAvailabilityDate || ""],
       ["Last Checked", (record) => record.lastCheckedDate || ""]
@@ -4702,7 +5359,7 @@
     replaceSelectOptions(els.paymentNetwork, "All networks", uniquePaymentValues("network"), state.payments.network);
     replaceSelectOptions(els.paymentRegion, "All regions", uniquePaymentValues("region"), state.payments.region);
     replaceSelectOptions(els.paymentTier, "All tiers", uniquePaymentValues("tier"), state.payments.tier);
-    replaceSelectOptions(els.paymentStatus, "All statuses", uniquePaymentValues("paymentStatus"), state.payments.status);
+    replaceSelectOptions(els.paymentStatus, "All status", uniquePaymentValues("paymentStatus"), state.payments.status);
     state.payments.month = els.paymentMonth.value;
     state.payments.network = els.paymentNetwork.value;
     state.payments.region = els.paymentRegion.value;
@@ -4717,8 +5374,6 @@
     els.paymentTier.value = state.payments.tier;
     els.paymentStatus.value = state.payments.status;
     els.paymentSearch.value = state.payments.search;
-    els.paymentUnpaidOnly.checked = state.payments.unpaidOnly;
-    els.paymentPendingOnly.checked = state.payments.pendingOnly;
     els.paymentOverdueOnly.checked = state.payments.overdueOnly;
   }
 
@@ -4730,22 +5385,31 @@
       .filter((record) => state.payments.region === "all" || record.region === state.payments.region)
       .filter((record) => state.payments.tier === "all" || record.tier === state.payments.tier)
       .filter((record) => state.payments.status === "all" || record.paymentStatus === state.payments.status)
-      .filter((record) => !state.payments.unpaidOnly || record.paymentStatus === "Unpaid")
-      .filter((record) => !state.payments.pendingOnly || record.paymentStatus === "Pending")
       .filter((record) => !state.payments.overdueOnly || isPaymentOverdue(record))
       .filter((record) => !search || normalize(`${record.merchantName} ${record.merchantId} ${record.region || ""}`).includes(search)));
   }
 
+  function latestPaymentCheckedDate(rows) {
+    const dates = (rows || [])
+      .map((record) => String(record.lastCheckedDate || "").slice(0, 10))
+      .filter(Boolean)
+      .sort();
+    if (dates.length) return dates[dates.length - 1];
+    return String(data.summary?.paymentLastCheckedAt || "").slice(0, 10);
+  }
+
   function renderPaymentSummary(rows) {
     const s = updatePaymentSummary(rows);
+    const lastChecked = latestPaymentCheckedDate(rows);
     const cards = [
-      ["Records", s.recordCount.toLocaleString()],
       ["Merchants", s.merchantCount.toLocaleString()],
-      ["Revenue made", shortMoney(s.totalRevenueMade)],
-      ["Commission made", shortMoney(s.totalCommissionMade)],
-      ["Unpaid merchants", s.unpaidMerchantCount.toLocaleString()],
-      ["Pending merchants", s.pendingMerchantCount.toLocaleString()],
-      ["Overdue rows", s.overdueCount.toLocaleString()]
+      ["Revenue made", paymentSummaryMoney(rows, s.totalRevenueMade)],
+      ["Commission made", paymentSummaryMoney(rows, s.totalCommissionMade)],
+      ["Last checked", lastChecked || "-"],
+      ["Paid", s.paidMerchantCount.toLocaleString()],
+      ["Pending", s.pendingMerchantCount.toLocaleString()],
+      ["Unpaid", s.unpaidMerchantCount.toLocaleString()],
+      ["Overdue", s.overdueMerchantCount.toLocaleString()]
     ];
     els.paymentSummary.innerHTML = cards.map(([label, value]) => `<div class="metric payment-metric"><span>${escapeHtml(labelText(label))}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
   }
@@ -4761,8 +5425,8 @@
         <td><span class="badge tier">${escapeHtml(record.tier || "Unknown")}</span></td>
         <td>${escapeHtml(`${optionText(record.reportMonth)} ${record.reportYear}`)}</td>
         <td><span class="badge ${paymentStatusClass(record.paymentStatus)}">${escapeHtml(statusText(record.paymentStatus || "Unknown"))}</span></td>
-        <td>${shortMoney(record.revenueMade)}</td>
-        <td>${shortMoney(record.commissionMade)}</td>
+        <td>${paymentMoney(record, record.revenueMade)}</td>
+        <td>${paymentMoney(record, record.commissionMade)}</td>
         <td>${escapeHtml(record.paymentCycle ? `${record.paymentCycle} days` : "-")}</td>
         <td>${escapeHtml(record.expectedPaymentDate || record.paymentAvailabilityDate || "-")}</td>
         <td>${escapeHtml(record.lastCheckedDate || "-")}</td>
@@ -6009,8 +6673,6 @@
     els.paymentTier.addEventListener("change", () => { state.payments.tier = els.paymentTier.value; renderPaymentsPage(); });
     els.paymentStatus.addEventListener("change", () => { state.payments.status = els.paymentStatus.value; renderPaymentsPage(); });
     els.paymentSearch.addEventListener("input", () => { state.payments.search = els.paymentSearch.value; renderPaymentsPage(); });
-    els.paymentUnpaidOnly.addEventListener("change", () => { state.payments.unpaidOnly = els.paymentUnpaidOnly.checked; renderPaymentsPage(); });
-    els.paymentPendingOnly.addEventListener("change", () => { state.payments.pendingOnly = els.paymentPendingOnly.checked; renderPaymentsPage(); });
     els.paymentOverdueOnly.addEventListener("change", () => { state.payments.overdueOnly = els.paymentOverdueOnly.checked; renderPaymentsPage(); });
     els.paymentSync.addEventListener("click", () => refreshLevantaPayments());
     els.languageToggle.addEventListener("click", toggleLanguage);
@@ -6063,12 +6725,19 @@
       extractMetricSortIntent,
       extractPaymentCycleFilter,
       paymentCycleFilterText,
+      normalizeRegion,
+      paymentCurrencySymbol,
+      paymentMoney,
+      keywordSearchRequest,
+      keywordSearchMatches,
       getPaymentRecords,
       withPendingPaymentPlaceholders,
       requestedRecommendationCount,
       parseTierOfferRequest,
       answerPrompt,
+      currentContext: () => state.currentContext,
       currentRecommendationBundle: () => state.activeRecommendationBundle,
+      recommendationDownloads: () => state.recommendationDownloads,
       excludedRecommendationKeys: () => Array.from(state.excludedRecommendationKeys),
       rankedRecommendations,
       displayCategory,
