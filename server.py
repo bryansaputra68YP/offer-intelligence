@@ -7,6 +7,7 @@ import gzip
 import json
 import mimetypes
 import os
+import re
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,7 +28,7 @@ DEFAULT_MONTHS = [
     ("May", 4, 2026),
     ("June", 5, 2026),
 ]
-DEFAULT_MARKETPLACES = ["US", "UK", "DE", "FR"]
+DEFAULT_MARKETPLACES = ["US", "CA", "UK", "FR", "DE"]
 MONTH_NAMES = [
     "January",
     "February",
@@ -259,12 +260,41 @@ def infer_region_from_text(value):
 
 
 def normalize_region(value):
-    text = str(value or "").strip().upper()
-    if text == "USA":
-        return "US"
-    if text == "GB":
-        return "UK"
-    return text
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    marketplace = re.sub(r"^https?://", "", raw, flags=re.I)
+    marketplace = re.sub(r"^www\.", "", marketplace, flags=re.I)
+    marketplace = marketplace.split("/")[0].split("?")[0].split("#")[0].lower()
+    compact = re.sub(r"[^a-z0-9.]+", "", marketplace)
+    aliases = {
+        "amazon.com": "US",
+        "com": "US",
+        "us": "US",
+        "usa": "US",
+        "unitedstates": "US",
+        "amazon.ca": "CA",
+        "ca": "CA",
+        "can": "CA",
+        "canada": "CA",
+        "amazon.co.uk": "UK",
+        "amazon.uk": "UK",
+        "co.uk": "UK",
+        "uk": "UK",
+        "gb": "UK",
+        "gbr": "UK",
+        "unitedkingdom": "UK",
+        "amazon.fr": "FR",
+        "fr": "FR",
+        "fra": "FR",
+        "france": "FR",
+        "amazon.de": "DE",
+        "de": "DE",
+        "deu": "DE",
+        "germany": "DE",
+        "deutschland": "DE",
+    }
+    return aliases.get(compact, raw.upper())
 
 
 def region_from_item(item, marketplace, offer=None):
@@ -409,11 +439,12 @@ def has_payable_payment_amount(record):
     )
 
 
+def has_payment_revenue_or_commission(record):
+    return number(record.get("revenueMade")) > 0 or number(record.get("commissionMade")) > 0
+
+
 def is_trackable_payment_record(record):
-    status = str(record.get("paymentStatus") or "").strip().lower()
-    raw_status = str(record.get("rawStatus") or "").strip().lower()
-    is_pending = status == "pending" or "pending" in raw_status
-    return has_payable_payment_amount(record) or (is_pending and bool(payment_merchant_key(record)))
+    return has_payment_revenue_or_commission(record)
 
 
 def pending_placeholder_record(source, month_name, zero_based_month, year):
