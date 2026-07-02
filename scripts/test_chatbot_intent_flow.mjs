@@ -93,6 +93,42 @@ assertEqual(hooks.detectQueryIntent("Shokz Electronics"), "category", "brand plu
 assertEqual(hooks.categoryForPrompt("Roborock robot vacuum"), "Robotic Vacuums", "brand plus subcategory wording should resolve to the subcategory");
 assertEqual(hooks.detectQueryIntent("Roborock robot vacuum"), "category", "brand plus subcategory wording should route to category lookup");
 
+const headphonesRequest = hooks.keywordSearchRequest("headphones");
+assertTruthy(headphonesRequest, "headphones should create a keyword search request");
+assertEqual(headphonesRequest.canonical, "headphones", "headphones should map to the headphones synonym group");
+assertTruthy(headphonesRequest.aliases.includes("earbuds"), "headphones search should include earbuds as a synonym");
+const headphoneMatches = hooks.keywordSearchMatches("headphones");
+assertTruthy(headphoneMatches.length > 0, "headphones should match offers in current data");
+assertEqual(headphoneMatches[0].offer.brand, "Shokz Official", "headphones should rank Shokz first from the current data");
+const headphoneAnswer = hooks.answerPrompt("headphones");
+assertMatch(headphoneAnswer, /offers related to headphones\/audio/i, "headphones answer should describe the broader audio match");
+assertMatch(headphoneAnswer, /Shokz Official/, "headphones answer should include Shokz in the preview");
+const keywordContext = hooks.currentContext();
+assertEqual(keywordContext.type, "keyword", "headphones answer should set keyword context");
+assertEqual(keywordContext.filters.keyword, "headphones", "keyword context should keep the search keyword");
+assertTruthy(keywordContext.filters.totalMatches > 0, "keyword context should include total matching offers");
+assertTruthy(keywordContext.filters.matchedCategories.length > 0, "keyword context should include matched categories");
+assertTruthy(keywordContext.summary.totalRevenue > 0, "keyword context should summarize revenue across matches");
+assertTruthy(keywordContext.summary.totalCommission > 0, "keyword context should summarize commission across matches");
+assertTruthy(keywordContext.summary.avgAov > 0, "keyword context should summarize average AOV across matches");
+assertTruthy(keywordContext.summary.blendedEpc > 0, "keyword context should summarize blended EPC across matches");
+assertTruthy(keywordContext.summary.avgCvr > 0, "keyword context should summarize average CVR across matches");
+
+assertEqual(
+  hooks.answerPrompt("audio"),
+  "Do you mean headphones/earbuds/audio products, or do you want all electronics offers?",
+  "ambiguous audio keyword should ask a clarification question"
+);
+assertEqual(hooks.currentContext().filters.totalMatches, 0, "ambiguous audio context should not retain stale matches");
+
+const poolCleanerAnswer = hooks.answerPrompt("pool cleaner");
+assertMatch(poolCleanerAnswer, /offers related to pool cleaner/i, "pool cleaner should use keyword search");
+assertEqual(hooks.currentContext().type, "keyword", "pool cleaner should set keyword context");
+
+assertEqual(hooks.answerPrompt("zzznomatch offers"), "No matching offers found in current data.", "unknown offer keyword should return the no-match message");
+assertEqual(hooks.currentContext().type, "keyword", "unknown keyword should still set keyword context");
+assertEqual(hooks.currentContext().filters.totalMatches, 0, "unknown keyword context should not retain stale matches");
+
 assertEqual(hooks.categoryForPrompt("top 5 offers"), null, "generic recommendation should not invent a category");
 assertEqual(hooks.detectQueryIntent("top 5 offers"), "recommendation", "generic recommendation should stay recommendation intent");
 
@@ -149,10 +185,23 @@ const paymentPlaceholderCounts = paymentRows.reduce((counts, record) => {
   if (record.isPlaceholder) counts[record.reportMonth] = (counts[record.reportMonth] || 0) + 1;
   return counts;
 }, {});
-assertTruthy(paymentMonthCounts.May > 0, "May pending payment rows should survive frontend filtering");
-assertTruthy(paymentMonthCounts.June > 0, "June pending payment rows should survive frontend filtering");
-assertTruthy(paymentPlaceholderCounts.May > 0, "May placeholder payment rows should remain visible");
-assertTruthy(paymentPlaceholderCounts.June > 0, "June placeholder payment rows should remain visible");
+assertTruthy(paymentMonthCounts.May > 0, "May payment rows with revenue or commission should survive frontend filtering");
+assertTruthy(paymentMonthCounts.June > 0, "June payment rows with revenue or commission should survive frontend filtering");
+assertEqual(paymentPlaceholderCounts.May || 0, 0, "May zero-amount placeholders should be hidden from frontend payment records");
+assertEqual(paymentPlaceholderCounts.June || 0, 0, "June zero-amount placeholders should be hidden from frontend payment records");
+assertTruthy(
+  paymentRows.every((record) => Number(record.revenueMade) > 0 || Number(record.commissionMade) > 0),
+  "frontend payment records should all have revenue or commission"
+);
+assertEqual(hooks.paymentMoney({ region: "US" }, 12.3), "$12.3", "US payment money should use dollars");
+assertEqual(hooks.normalizeRegion("amazon.com"), "US", "amazon.com should display as US");
+assertEqual(hooks.normalizeRegion("Amazon.ca"), "Canada", "Amazon.ca should display as Canada");
+assertEqual(hooks.normalizeRegion("amazon.co.uk"), "UK", "amazon.co.uk should display as UK");
+assertEqual(hooks.normalizeRegion("amazon.FR"), "FR", "amazon.FR should display as FR");
+assertEqual(hooks.normalizeRegion("amazon.DE"), "DE", "amazon.DE should display as DE");
+assertEqual(hooks.paymentMoney({ region: "DE" }, 12.3), "€12.3", "DE payment money should use euros");
+assertEqual(hooks.paymentMoney({ region: "FR" }, 12.3), "€12.3", "FR payment money should use euros");
+assertEqual(hooks.paymentMoney({ region: "UK" }, 12.3), "£12.3", "UK payment money should use pounds");
 
 const zhPaymentCycleBelow = hooks.extractPaymentCycleFilter("付款周期在100天以下的offer");
 assertEqual(zhPaymentCycleBelow.operator, "<", "Chinese 以下 should be strict below");

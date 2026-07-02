@@ -152,11 +152,44 @@ def infer_region_from_text(value)
 end
 
 def normalize_region(value)
-  text = value.to_s.strip.upcase
-  return nil if text.empty?
-  return "US" if text == "USA"
-  return "UK" if text == "GB"
-  text
+  raw = value.to_s.strip
+  return nil if raw.empty?
+  marketplace = raw
+                .sub(%r{\Ahttps?://}i, "")
+                .sub(/\Awww\./i, "")
+                .split(/[\/?#]/)
+                .first
+                .to_s
+                .downcase
+  compact = marketplace.gsub(/[^a-z0-9.]+/, "")
+  aliases = {
+    "amazon.com" => "US",
+    "com" => "US",
+    "us" => "US",
+    "usa" => "US",
+    "unitedstates" => "US",
+    "amazon.ca" => "CA",
+    "ca" => "CA",
+    "can" => "CA",
+    "canada" => "CA",
+    "amazon.co.uk" => "UK",
+    "amazon.uk" => "UK",
+    "co.uk" => "UK",
+    "uk" => "UK",
+    "gb" => "UK",
+    "gbr" => "UK",
+    "unitedkingdom" => "UK",
+    "amazon.fr" => "FR",
+    "fr" => "FR",
+    "fra" => "FR",
+    "france" => "FR",
+    "amazon.de" => "DE",
+    "de" => "DE",
+    "deu" => "DE",
+    "germany" => "DE",
+    "deutschland" => "DE"
+  }
+  aliases.fetch(compact, raw.upcase)
 end
 
 def region_from_hash(hash, fallback_name = nil)
@@ -202,12 +235,7 @@ rescue ArgumentError
 end
 
 def trackable_payment_record?(record)
-  has_amount = %w[commissionMade expectedPaymentAmount paidAmount remainingAmount].any? { |key| num(record[key]).to_f.positive? }
-  status = record["paymentStatus"].to_s.downcase
-  raw_status = record["rawStatus"].to_s.downcase
-  merchant_key = record["merchantId"].to_s.strip
-  merchant_key = normalize_brand(record["merchantName"]) if merchant_key.empty?
-  has_amount || (!merchant_key.empty? && (record["isPlaceholder"] || status == "pending" || raw_status.include?("pending")))
+  num(record["revenueMade"]).to_f.positive? || num(record["commissionMade"]).to_f.positive?
 end
 
 def compact_hash(hash)
